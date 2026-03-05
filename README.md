@@ -1,1 +1,1 @@
-# C:\Users\spadmin\OneDrive - ETH Zurich\Documents\repos\linearized_milling_study 
+# Milling study for linearized robot with mechanistic force model
