@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+ECHO is off.
+# Environments
+.venv/
+venv/
+env/
+ECHO is off.
+# IDE
+.vscode/
+.idea/
+ECHO is off.
+# OS
+.DS_Store
+# Custom
+Optimized_robot-milling-feed-planning/
+data/
+
