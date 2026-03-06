@@ -7,6 +7,7 @@ import math as m
 from eraser_of_matter import milling_workpiece
 from utils.analytical_mechanistic_milling import *
 from utils.save_utils import *
+from utils.dynamics_utils import * 
 
 
 # -------------------------
@@ -47,12 +48,24 @@ fz_mm = FEED_SPEED / (rev_per_s * Z_TEETH)
 # --- Workpiece parameters --- 
 OUTPUT_DIR =   "data/experiments"
 PARAMS_DIR =   "data/experiments/settings"
+LINEARIZED_MODEL_NPZ =  "data/linearized_operational_space_xyz.npz"
 
 # ---- Workpiece geometry [mm]
 WORKPIECE_P1_MM = np.array([0.0, 0.0])
 WORKPIECE_P2_MM = np.array([50.0, 0.0])
 WORKPIECE_P3_MM = np.array([50.0, 50.0])
 WORKPIECE_P4_MM = np.array([0.0, 50.0])
+
+# -------------------------
+# Build Macro dynamics
+# -------------------------
+if ENABLE_SPRING_DAMPER_DYNAMICS:
+    M2, C2, K2, extras = load_macro_from_npz(LINEARIZED_MODEL_NPZ, axes=(0, 1))
+    M_micro = np.eye(2) * 80.0
+    Mtot = M2 + M_micro
+    p_osc = MacroOscillatorParams(M=Mtot, C=C2, K=K2)
+
+
 
 # ----- experiment dictionary -----
 params = {
@@ -77,7 +90,12 @@ params = {
     # process
     "feed_speed_mm_s": FEED_SPEED,
     "feed_per_tooth_mm": fz_mm,
+    
+    # settings
+    "dynamics_enabled" : ENABLE_SPRING_DAMPER_DYNAMICS,
 }
+
+
 
 @dataclass
 class WorkpieceGeometry:
