@@ -20,15 +20,16 @@ ENABLE_SPRING_DAMPER_DYNAMICS = False
 
 # Motion / engagement config 
 RADIAL_ENGAGEMENT_MM = 8.0
-FEED_DIR = np.array([0.0, 1.0], dtype=float) 
+AXIAL_CUTTING_DEPTH_MM = 1.0
 
-DT = 0.5 * 1e-4
-Samples_per_Period = 360 
+
+FEED_DIR = np.array([0.0, 1.0], dtype=float) 
+DT = 0.1 * 1e-4
+Samples_per_Period = 360 * 2 
 TOOL_DIAMETER_MM = 20.0
-AXIAL_CUTTING_DEPTH_MM = 5.0
 
 FEED_SPEED = 20.0     # [mm/s]
-Z_TEETH = 1
+Z_TEETH = 8
 SPINDLE_SPIN = -1
 
 
@@ -81,9 +82,9 @@ params = {
 @dataclass
 class WorkpieceGeometry:
     p1: np.ndarray = field(default_factory=lambda: np.array([0, 0]))
-    p2: np.ndarray = field(default_factory=lambda: np.array([1000, 0]))
-    p3: np.ndarray = field(default_factory=lambda: np.array([1000, 76]))
-    p4: np.ndarray = field(default_factory=lambda: np.array([0, 76]))
+    p2: np.ndarray = field(default_factory=lambda: np.array([0, 0]))
+    p3: np.ndarray = field(default_factory=lambda: np.array([0, 0]))
+    p4: np.ndarray = field(default_factory=lambda: np.array([0, 0]))
 
     @property
     def xy(self):
@@ -210,11 +211,69 @@ if __name__ == "__main__":
     tool_center_actual_hist_mm = np.zeros((N, 2))
     milling_forces = np.zeros((2,1))
     
+    feed_speed_mm_s = params["feed_speed_mm_s"]
+
+    workpiece_width = WORKPIECE_P2_MM[0] - WORKPIECE_P1_MM[0]
+    workpiece_height = WORKPIECE_P4_MM[1] - WORKPIECE_P1_MM[1]
+
+    tool_start = tool_center0_mm
+    tool_entry = start_center
+    tool_exit = end_center
+
+    approach_distance_mm = np.linalg.norm(tool_entry - tool_start)
+    cut_distance_mm = np.linalg.norm(tool_exit - tool_entry)
+
+    t_entry_s = approach_distance_mm / max(feed_speed_mm_s, 1e-12)
+    t_cut_s = cut_distance_mm / max(feed_speed_mm_s, 1e-12)
+    t_total_s = t_entry_s + t_cut_s
+
+
+    print("\n=== Simulation ===")
     print("Feed speed (mm/s):", params["feed_speed_mm_s"])
     print(f"Simulation time (s): {T:.3f}")
     print("Spring-damper dynamics enabled:", ENABLE_SPRING_DAMPER_DYNAMICS)
     print("Live plotting enabled:", ENABLE_LIVE_PLOTTING)
 
+    print("\n=== Milling Setup Summary ===")
+
+    print(
+        f"Workpiece (mm): width={workpiece_width:.2f}, "
+        f"height={workpiece_height:.2f}"
+    )
+
+    print(
+        f"Tool: D={params['tool_diameter_mm']:.2f} mm, "
+        f"R={params['tool_radius_mm']:.2f} mm, "
+        f"radial_eng={RADIAL_ENGAGEMENT_MM:.2f} mm, "
+        f"axial_depth={params['axial_cutting_depth_mm']:.2f} mm, "
+        f"teeth={params['z_teeth']}"
+    )
+
+    print(
+        f"Process: rpm={params['rpm']:.1f}, "
+        f"feed_per_tooth={params['feed_per_tooth_mm']:.4f} mm/tooth, "
+        f"feed_speed={feed_speed_mm_s:.3f} mm/s"
+    )
+
+    print(
+        f"Path: overtravel={params['tool_radius_mm'] + 0.1:.2f} mm, "
+        f"feed_dir={FEED_DIR}"
+    )
+
+    print(
+        f"Tool center positions (mm): "
+        f"start=({tool_start[0]:.3f}, {tool_start[1]:.3f}), "
+        f"entry=({tool_entry[0]:.3f}, {tool_entry[1]:.3f}), "
+        f"exit=({tool_exit[0]:.3f}, {tool_exit[1]:.3f})"
+    )
+
+    print(
+        f"Timing from feed: "
+        f"entry={t_entry_s:.3f} s, "
+        f"cut+exit={t_cut_s:.3f} s, "
+        f"total={t_total_s:.3f} s"
+    )
+    
     if ENABLE_LIVE_PLOTTING:
         plt.ion()
     live_plot_stride = max(1, PRINT_EVERY_N)
