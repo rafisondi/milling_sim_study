@@ -13,11 +13,11 @@ from utils.dynamics_utils import *
 # -------------------------
 # Global config 
 # -------------------------
-SIMULATION_TIME_S = 1.0
+SIMULATION_TIME_S = 3.5
 PRINT_EVERY_N = 2000
 SAVE_EXPERIMENT_DATA = True
 ENABLE_LIVE_PLOTTING = False 
-ENABLE_SPRING_DAMPER_DYNAMICS = False
+ENABLE_SPRING_DAMPER_DYNAMICS = True
 
 # Motion / engagement config 
 RADIAL_ENGAGEMENT_MM = 8.0
@@ -25,8 +25,8 @@ AXIAL_CUTTING_DEPTH_MM = 1.0
 
 
 FEED_DIR = np.array([0.0, 1.0], dtype=float) 
-DT = 0.1 * 1e-4
-Samples_per_Period = 360 * 2 
+DT =  1e-4
+Samples_per_Period = 360 
 TOOL_DIAMETER_MM = 20.0
 
 FEED_SPEED = 20.0     # [mm/s]
@@ -322,8 +322,13 @@ if __name__ == "__main__":
             milling_forces = milling_process.total_milling_force[0:2, np.newaxis]
         else:
             milling_forces = np.zeros((2,1))
+            
+        # Integrate oscillator only when spring-damper dynamics are enabled.
+        if ENABLE_SPRING_DAMPER_DYNAMICS:
+            state = RungeKutta4(dynamics, t, state, dt, p_osc, u, milling_forces)
+        else:
+            state[:, 0] = 0.0
 
-        state[:, 0] = 0.0
         t_hist[n] = t
         x_hist[n,:] = state[0:2,0]
         u_hist[n,:] = u[:,0]
@@ -344,13 +349,6 @@ if __name__ == "__main__":
                 fig_live.canvas.flush_events()
                 plt.pause(0.001)
                 
-    step = 20
-    td = t_hist[::step]
-    xd = x_hist[::step]
-    ud = u_hist[::step]
-    fd = fmill_hist[::step]
-    fad = fanalyt_hist[::step]
-    f0d = fzero_hist[::step]
     
     
     if SAVE_EXPERIMENT_DATA:

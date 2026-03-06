@@ -218,6 +218,23 @@ def main():
     #     ax[1].legend()
 
     #     plt.tight_layout()   
+    
+    fig, ax = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+
+    ax[0].plot(t, df["x_x_m"], label="Tool Position X")
+    ax[0].set_ylabel("position [m]")
+
+    ax[0].set_title("Tool position\n" + desc)
+    ax[0].grid(True)
+    ax[0].legend()
+
+    ax[1].plot(t, df["x_y_m"], label="Tool Position Y")
+    ax[1].set_xlabel("Time [s]")
+    ax[1].set_ylabel("Position [m]")
+    ax[1].grid(True)
+    ax[1].legend()
+
+    plt.tight_layout()   
 
     plt.show()
 if __name__ == "__main__":
