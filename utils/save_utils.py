@@ -52,9 +52,10 @@ def save_params(params: dict, base_dir="experiments"):
 
     return exp_id, exp_dir
 
+
 def save_experiment_csv(
     params: dict,
-    hash_id: str,
+    settings_hash: str,
     output_dir="data/experiments",
     t_hist=None,
     x_hist=None,
@@ -64,30 +65,20 @@ def save_experiment_csv(
     fzero_hist=None,
     tool_center_nominal_hist_mm=None,
     tool_center_actual_hist_mm=None,
-    # save_params_json=True,
+    tool_orientation_hist = None,
 ):
-    """
-    Save experiment data as one CSV in a descriptive folder.
-
-    Folder name format:
-        <timestamp>__<hash>__rpm<rpm>__feed<feed>__fs<Hz>
-
-    Returns
-    -------
-    exp_dir : Path
-    csv_path : Path
-    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     rpm = float(params["rpm"])
     feed = float(params["feed_speed_mm_s"])
     fs_hz = 1.0 / float(params["dt"])
 
     folder_name = (
-        f"{timestamp}"
-        f"__{hash_id}"
+        f"{run_id}"
+        f"__{settings_hash}"
         f"__rpm{rpm:.1f}"
         f"__feed{feed:.3f}"
         f"__fs{fs_hz:.0f}"
@@ -96,7 +87,6 @@ def save_experiment_csv(
     exp_dir = output_dir / folder_name
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build CSV columns
     cols = {}
 
     if t_hist is not None:
@@ -123,8 +113,9 @@ def save_experiment_csv(
     add_2d_array(fzero_hist, "fzero", suffixes=["_x_N", "_y_N"])
     add_2d_array(tool_center_nominal_hist_mm, "tool_center_nominal", suffixes=["_x_mm", "_y_mm"])
     add_2d_array(tool_center_actual_hist_mm, "tool_center_actual", suffixes=["_x_mm", "_y_mm"])
+    
+    cols["tool_orientation"] = np.asarray(tool_orientation_hist).reshape(-1)
 
-    # Check lengths
     lengths = [len(v) for v in cols.values()]
     if len(set(lengths)) > 1:
         raise ValueError(f"Not all arrays have the same length: {set(lengths)}")
@@ -135,16 +126,8 @@ def save_experiment_csv(
     csv_path = exp_dir / "experiment_data.csv"
     np.savetxt(csv_path, data, delimiter=",", header=header, comments="")
 
-    # if save_params_json:
-    #     with open(exp_dir / "params.json", "w", encoding="utf-8") as f:
-    #         json.dump(params, f, indent=2, sort_keys=True)
 
-    return exp_dir, csv_path
-
-import json
-from pathlib import Path
-from datetime import datetime
-import numpy as np
+    return exp_dir, csv_path, run_id
 
 
 def _to_serializable(obj):
@@ -163,66 +146,38 @@ def _to_serializable(obj):
         return bool(obj)
     return obj
 
-
 def write_to_experimental_log(
     params: dict,
-    hash_id: str,
+    settings_hash: str,
+    run_id: str,
     exp_dir=None,
     csv_path=None,
     params_dir=None,
     log_path="data/experimental_log.txt",
     status="SUCCESS",
-    extra_notes=None,
 ):
-    """
-    Append one completed experiment entry to a plain-text log file.
-
-    Parameters
-    ----------
-    params : dict
-        Experiment parameter dictionary.
-    hash_id : str
-        Hash ID of the experiment.
-    exp_dir : str or Path or None
-        Folder where experiment data was saved.
-    csv_path : str or Path or None
-        CSV file path.
-    params_dir : str or Path or None
-        Folder where params.json was saved separately.
-    log_path : str or Path
-        Path to the experiment log text file.
-    status : str
-        Run status label, e.g. SUCCESS / FAILED.
-    extra_notes : str or None
-        Optional free-text note.
-    """
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     params_clean = _to_serializable(params)
 
     lines = []
     lines.append("=" * 100)
-    lines.append(f"timestamp      : {timestamp}")
-    lines.append(f"status         : {status}")
-    lines.append(f"hash_id        : {hash_id}")
+    lines.append(f"log_timestamp   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"status          : {status}")
+    lines.append(f"run_id          : {run_id}")
+    lines.append(f"settings_hash   : {settings_hash}")
 
     if exp_dir is not None:
-        lines.append(f"experiment_dir : {Path(exp_dir)}")
+        lines.append(f"experiment_dir  : {Path(exp_dir)}")
     if csv_path is not None:
-        lines.append(f"csv_path       : {Path(csv_path)}")
+        lines.append(f"csv_path        : {Path(csv_path)}")
     if params_dir is not None:
-        lines.append(f"params_dir     : {Path(params_dir)}")
-
-    if extra_notes is not None:
-        lines.append(f"notes          : {extra_notes}")
+        lines.append(f"params_dir      : {Path(params_dir)}")
 
     lines.append("params:")
     for key in sorted(params_clean.keys()):
-        value = params_clean[key]
-        lines.append(f"  {key}: {value}")
-
+        lines.append(f"  {key}: {params_clean[key]}")
     lines.append("")
 
     with open(log_path, "a", encoding="utf-8") as f:

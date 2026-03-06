@@ -2,9 +2,6 @@ import numpy as np
 from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
 import math as m
-from pathlib import Path
-from datetime import datetime
-
 
 # Milling simulation for process forces
 from eraser_of_matter import milling_workpiece
@@ -15,19 +12,18 @@ from utils.save_utils import *
 # -------------------------
 # Global config 
 # -------------------------
-
 SIMULATION_TIME_S = 1.0
 PRINT_EVERY_N = 2000
 SAVE_EXPERIMENT_DATA = True
-ENABLE_LIVE_PLOTTING = True
+ENABLE_LIVE_PLOTTING = False 
 ENABLE_SPRING_DAMPER_DYNAMICS = False
 
 # Motion / engagement config 
 RADIAL_ENGAGEMENT_MM = 8.0
 FEED_DIR = np.array([0.0, 1.0], dtype=float) 
 
-DT = 1e-4
-Samples_per_Period = 360
+DT = 0.5 * 1e-4
+Samples_per_Period = 360 
 TOOL_DIAMETER_MM = 20.0
 AXIAL_CUTTING_DEPTH_MM = 5.0
 
@@ -48,7 +44,6 @@ fz_mm = FEED_SPEED / (rev_per_s * Z_TEETH)
 
 
 # --- Workpiece parameters --- 
-
 OUTPUT_DIR =   "data/experiments"
 PARAMS_DIR =   "data/experiments/settings"
 
@@ -57,8 +52,6 @@ WORKPIECE_P1_MM = np.array([0.0, 0.0])
 WORKPIECE_P2_MM = np.array([50.0, 0.0])
 WORKPIECE_P3_MM = np.array([50.0, 50.0])
 WORKPIECE_P4_MM = np.array([0.0, 50.0])
-
-
 
 # ----- experiment dictionary -----
 params = {
@@ -85,7 +78,6 @@ params = {
     "feed_per_tooth_mm": fz_mm,
 }
 
-
 @dataclass
 class WorkpieceGeometry:
     p1: np.ndarray = field(default_factory=lambda: np.array([0, 0]))
@@ -101,10 +93,8 @@ class WorkpieceGeometry:
     
 def tool_center_offset_for_radial_engagement(radius_mm, radial_eng_mm, feed_dir):
     """Helper function which allows easy starting position for tool tip placement"""
-    n_surface = np.array([-feed_dir[1], feed_dir[0]])  # normal vector pointing outward from the cut surface
+    n_surface = np.array([-feed_dir[1], feed_dir[0]]) 
     offset_from_surface = radius_mm - radial_eng_mm
-    # offset_y = offset_from_surface * np.dot(n_surface, np.array([0, 1]))
-    # offset_x = offset_from_surface * np.dot(n_surface, np.array([1, 0]))
     
     offset = (n_surface * offset_from_surface - feed_dir* radius_mm)
     offset_x = offset[0]
@@ -180,27 +170,26 @@ if __name__ == "__main__":
     milling_process.radius_tool         = params["tool_radius_mm"]
     milling_process.slice_height        = params["axial_cutting_depth_mm"]
     
-    # ---- Trajectory configuration ----
-    FEED_DIR = np.array([0.0, 1.0])
-    start_corner = wp_p1
-    travel_distance = float(wp_p4[1] - wp_p1[1])
-    overtravel_dist = params["tool_radius_mm"] + 0.1
-    start_center = start_corner  + tool_center_offset_for_radial_engagement(params["tool_radius_mm"], RADIAL_ENGAGEMENT_MM, FEED_DIR)
-    end_center   = start_center + (travel_distance + overtravel_dist) * FEED_DIR    
-    tool_center0_mm = start_center
-    # -----------------------------------
-    
     # # ---- Trajectory configuration ----
-    # FEED_DIR = np.array([1.0, 0.0])
-    # start_corner = wp_p4
-    # travel_distance = float(wp_p3[0] - wp_p4[0])
+    # FEED_DIR = np.array([0.0, 1.0])
+    # start_corner = wp_p1
+    # travel_distance = float(wp_p4[1] - wp_p1[1])
     # overtravel_dist = params["tool_radius_mm"] + 0.1
     # start_center = start_corner  + tool_center_offset_for_radial_engagement(params["tool_radius_mm"], RADIAL_ENGAGEMENT_MM, FEED_DIR)
     # end_center   = start_center + (travel_distance + overtravel_dist) * FEED_DIR    
     # tool_center0_mm = start_center
     # # -----------------------------------
     
-
+    # ---- Trajectory configuration ----
+    FEED_DIR = np.array([1.0, 0.0])
+    start_corner = wp_p4
+    travel_distance = float(wp_p3[0] - wp_p4[0])
+    overtravel_dist = params["tool_radius_mm"] + 0.1
+    start_center = start_corner  + tool_center_offset_for_radial_engagement(params["tool_radius_mm"], RADIAL_ENGAGEMENT_MM, FEED_DIR)
+    end_center   = start_center + (travel_distance + overtravel_dist) * FEED_DIR    
+    tool_center0_mm = start_center
+    # -----------------------------------
+    
     # Open-loop configuration:
     u = np.zeros((2,1))
     dt = DT       
@@ -213,6 +202,7 @@ if __name__ == "__main__":
     t_hist = np.zeros(N)
     x_hist = np.zeros((N,2))
     u_hist = np.zeros((N,2))
+    phi_tool_hist = np.zeros(N)
     fmill_hist = np.zeros((N,2))
     fanalyt_hist = np.zeros((N,2))
     fzero_hist = np.zeros((N,2))
@@ -230,8 +220,6 @@ if __name__ == "__main__":
     live_plot_stride = max(1, PRINT_EVERY_N)
     for n in range(N):
 
-        # Milling force disturbance
-        # Physical spindle angle used by the analytical model.
         spindle_angle = t * params["omega_rad_s"]
         tool_center_mm = (
             tool_center0_mm
@@ -243,7 +231,7 @@ if __name__ == "__main__":
         
         F_analytical, F_zero, _ = analytical_downmilling_force(
             tool_center_mm=tool_center_mm,
-            orientation=spindle_angle,
+            orientation=spindle_angle  + np.pi / 2,
             workpiece_xy=workpiece.xy,
             tool_radius_mm=params["tool_radius_mm"],
             tool_diameter_mm=params["tool_diameter_mm"],
@@ -258,7 +246,6 @@ if __name__ == "__main__":
         else:
             milling_forces = np.zeros((2,1))
 
-
         state[:, 0] = 0.0
         t_hist[n] = t
         x_hist[n,:] = state[0:2,0]
@@ -268,6 +255,7 @@ if __name__ == "__main__":
         fzero_hist[n,:] = F_zero
         tool_center_nominal_hist_mm[n, :] = tool_center_nominal_mm
         tool_center_actual_hist_mm[n, :] = tool_center_mm
+        phi_tool_hist[n] = spindle_angle
         t += dt
         
         if n % live_plot_stride == 0:
@@ -288,13 +276,12 @@ if __name__ == "__main__":
     f0d = fzero_hist[::step]
     
     
-    # Saving using Hash-ID
     if SAVE_EXPERIMENT_DATA:
-        hash_id, params_dir = save_params(params=params, base_dir=PARAMS_DIR)
+        settings_hash, params_dir = save_params(params=params, base_dir=PARAMS_DIR)
 
-        exp_dir, csv_path = save_experiment_csv(
+        exp_dir, csv_path, run_id = save_experiment_csv(
             params=params,
-            hash_id=hash_id,
+            settings_hash=settings_hash,
             output_dir=OUTPUT_DIR,
             t_hist=t_hist,
             x_hist=x_hist,
@@ -304,11 +291,13 @@ if __name__ == "__main__":
             fzero_hist=fzero_hist,
             tool_center_nominal_hist_mm=tool_center_nominal_hist_mm,
             tool_center_actual_hist_mm=tool_center_actual_hist_mm,
+            tool_orientation_hist=phi_tool_hist
         )
 
         write_to_experimental_log(
             params=params,
-            hash_id=hash_id,
+            settings_hash=settings_hash,
+            run_id=run_id,
             exp_dir=exp_dir,
             csv_path=csv_path,
             params_dir=params_dir,
@@ -318,17 +307,3 @@ if __name__ == "__main__":
         print("Saved CSV to:", csv_path)
         
         
-
-
-    # # Block-average simulated forces over one spindle revolution.
-    # omega_abs = abs(params["omega_rad_s"])
-    # rev_period = (2.0 * m.pi) / max(omega_abs, 1e-12)
-    # samples_per_rev = max(1, int(round(rev_period / dt)))
-    # fmill_revavg = np.full_like(fmill_hist, np.nan)
-    # for i0 in range(0, N, samples_per_rev):
-    #     i1 = min(N, i0 + samples_per_rev)
-    #     fmean = np.mean(fmill_hist[i0:i1, :], axis=0)
-    #     fmill_revavg[i0:i1, :] = fmean
-    # frad = fmill_revavg[::step]
-
-   
