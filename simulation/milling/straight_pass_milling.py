@@ -13,7 +13,7 @@ from utils.dynamics_utils import *
 # -------------------------
 # Global config 
 # -------------------------
-SIMULATION_TIME_S = 3.5
+SIMULATION_TIME_S = 10
 PRINT_EVERY_N = 2000
 SAVE_EXPERIMENT_DATA = True
 ENABLE_LIVE_PLOTTING = False 
@@ -26,11 +26,11 @@ AXIAL_CUTTING_DEPTH_MM = 1.0
 
 FEED_DIR = np.array([0.0, 1.0], dtype=float) 
 DT =  1e-4
-Samples_per_Period = 360 
+Samples_per_Period = 360
 TOOL_DIAMETER_MM = 20.0
 
 FEED_SPEED = 20.0     # [mm/s]
-Z_TEETH = 8
+Z_TEETH = 4
 SPINDLE_SPIN = -1
 
 
@@ -52,9 +52,9 @@ LINEARIZED_MODEL_NPZ =  "data/linearized_operational_space_xyz.npz"
 
 # ---- Workpiece geometry [mm]
 WORKPIECE_P1_MM = np.array([0.0, 0.0])
-WORKPIECE_P2_MM = np.array([50.0, 0.0])
-WORKPIECE_P3_MM = np.array([50.0, 50.0])
-WORKPIECE_P4_MM = np.array([0.0, 50.0])
+WORKPIECE_P2_MM = np.array([100.0, 0.0])
+WORKPIECE_P3_MM = np.array([100.0, 100.0])
+WORKPIECE_P4_MM = np.array([0.0, 100.0])
 
 # -------------------------
 # Build Macro dynamics
@@ -86,6 +86,7 @@ params = {
     "tool_diameter_mm": TOOL_DIAMETER_MM,
     "tool_radius_mm": TOOL_RADIUS_MM,
     "axial_cutting_depth_mm": AXIAL_CUTTING_DEPTH_MM,
+    "radial_engagement_mm": RADIAL_ENGAGEMENT_MM,
 
     # process
     "feed_speed_mm_s": FEED_SPEED,
