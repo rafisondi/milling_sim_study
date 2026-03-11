@@ -5,9 +5,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import os
+from pathlib import Path
+
+from utils.save_utils import save_experiment_csv, save_params, write_to_experimental_log
+from utils.dynamics_utils import load_macro_from_npz, MacroOscillatorParams, dynamics, RungeKutta4
 from eraser_of_matter import milling_workpiece
 from GeopmetryStandalone import Area2D
-from utils.save_utils import save_experiment_csv, save_params, write_to_experimental_log
+
 
 
 # Make extended_workpiece/ importable when running this file from repo root.
@@ -23,7 +28,7 @@ from milling_path import MillingPath
 # Global config
 # -------------------------
 DT = 1e-4
-SAMPLES_PER_PERIOD = 360 * 2 
+SAMPLES_PER_PERIOD = 360 
 PRINT_EVERY_N = 2000
 SAVE_EXPERIMENT_DATA = True
 
@@ -35,7 +40,7 @@ WORKPIECE_PICKLE = "data/paths/Workpiece_long_with_start.pickle"
 AXIAL_CUTTING_DEPTH_MM = 1.0
 FEED_SPEED_MM_S = 40.0
 SPINDLE_SPIN = -1
-Z_TEETH = 1
+Z_TEETH = 4
 
 PATH_OFFSET_MM = None
 PATH_OFFSET_SIDE = "left"
@@ -43,6 +48,7 @@ PATH_OFFSET_SIDE = "left"
 # Save locations
 OUTPUT_DIR = "data/experiments"
 PARAMS_DIR = "data/experiments/settings"
+LINEARIZED_MODEL_NPZ = "linearized_operational_space_xyz.npz"
 
 
 # ----- derived parameters -----
@@ -82,6 +88,10 @@ params = {
     "workpiece_pickle": WORKPIECE_PICKLE,
     "path_offset_mm": PATH_OFFSET_MM,
     "path_offset_side": PATH_OFFSET_SIDE,
+
+    # compliant-base model
+    "linearized_model_npz": LINEARIZED_MODEL_NPZ,
+    "micro_mass_diag_kg": 80.0,
 }
 
 
@@ -117,21 +127,29 @@ def generate_chafli_trajectory(path_csv: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 if __name__ == "__main__":
+    M2, C2, K2, _ = load_macro_from_npz(LINEARIZED_MODEL_NPZ, axes=(0, 1))
+    M_micro = np.eye(2) * params["micro_mass_diag_kg"]
+    Mtot = M2 + M_micro
+    p_osc = MacroOscillatorParams(M=Mtot, C=C2, K=K2)
+
     workpiece_vertices = load_workpiece_vertices_from_pickle(WORKPIECE_PICKLE)
     trajectory_local_mm, pos_on_path_mm = generate_chafli_trajectory(MILLING_PATH_CSV)
 
     milling_process = milling_workpiece(workpiece_vertices, axial_cutting_depth=AXIAL_CUTTING_DEPTH_MM)
     milling_process.number_of_teeth = params["z_teeth"]
     milling_process.slice_height = params["axial_cutting_depth_mm"]
+    milling_forces = np.zeros((2, 1))
 
     N = len(trajectory_local_mm)
     t_hist = np.arange(N) * DT
 
+    state = np.zeros((4, 1))  # [x; xdot] in meters
+    u = np.zeros((2, 1))      # external input force
     x_hist = np.zeros((N, 2))
     u_hist = np.zeros((N, 2))
     fmill_hist = np.zeros((N, 2))
     tool_center_nominal_hist_mm = trajectory_local_mm.copy()
-    tool_center_actual_hist_mm = trajectory_local_mm.copy()
+    tool_center_actual_hist_mm = np.zeros((N, 2))
     phi_tool_hist = np.zeros(N)
 
     print("\n=== Trajectory Milling Simulation ===")
@@ -140,32 +158,44 @@ if __name__ == "__main__":
     print(f"Samples per period: {params['samples_per_period']}")
     print(f"RPM: {params['rpm']:.1f}")
     print(f"Path feed speed: {params['feed_speed_mm_s']:.3f} mm/s")
+    print(f"Linearized model: {params['linearized_model_npz']}")
+    print(f"M diag (kg): {np.diag(Mtot)}")
+    print(f"C diag (N s/m): {np.diag(C2)}")
+    print(f"K diag (N/m): {np.diag(K2)}")
 
     for i in range(N):
         t = t_hist[i]
         spindle_angle = t * params["omega_rad_s"]
+        tool_center_nominal_mm = trajectory_local_mm[i]
+        tool_center_mm = tool_center_nominal_mm + state[0:2, 0] * 1e3
 
         milling_process.erase_step(
-            trajectory_local_mm[i],
+            tool_center_mm,
             spindle_angle,
             direction=params["spindle_spin"],
             t=t,
         )
 
         if i > 1:
-            milling_forces = milling_process.total_milling_force[0:2]
+            milling_forces = np.asarray(milling_process.total_milling_force[0:2], dtype=float).reshape(2, 1)
         else:
-            milling_forces = np.zeros(2)
+            milling_forces = np.zeros((2, 1))
 
-        fmill_hist[i, :] = milling_forces
+        state = RungeKutta4(dynamics, t, state, DT, p_osc, u, milling_forces)
+
+        fmill_hist[i, :] = milling_forces[:, 0]
+        x_hist[i, :] = state[0:2, 0]
+        u_hist[i, :] = u[:, 0]
+        tool_center_actual_hist_mm[i, :] = tool_center_mm
         phi_tool_hist[i] = spindle_angle
 
         if i % PRINT_EVERY_N == 0:
             progress = 100.0 * i / max(1, N - 1)
             print(
                 f"Sim state: {progress:5.1f}% t={t:.3f} s, "
-                f"tool_center={trajectory_local_mm[i]}, "
-                f"milling_force={milling_forces}"
+                f"tool_center={tool_center_mm}, "
+                f"x={state[0:2, 0]}, "
+                f"milling_force={milling_forces[:, 0]}"
             )
 
     if SAVE_EXPERIMENT_DATA:
