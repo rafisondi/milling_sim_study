@@ -133,14 +133,18 @@ def generate_chafli_trajectory(
     axial_cutting_depth_mm: float,
     feed_speed_mm_s: float,
     dt: float,
+    feed_curve: np.ndarray | float | None = None,
+    min_feed_speed_mm_s: float = 1e-6,
+    final_pos_on_path_mm: float | None = None,
     path_offset_mm: float | None = None,
     path_offset_side: str = "left",
 ) -> tuple[np.ndarray, np.ndarray]:
     milling_path_df = pd.read_csv(path_csv, index_col=0)
+    effective_feed_curve = feed_speed_mm_s if feed_curve is None else feed_curve
     milling_path = MillingPath(
         milling_path_df.to_numpy(),
         axial_cutting_dept=axial_cutting_depth_mm,
-        feed_curve=feed_speed_mm_s,
+        feed_curve=effective_feed_curve,
         offset=path_offset_mm,
         offset_side=path_offset_side,
     )
@@ -148,11 +152,18 @@ def generate_chafli_trajectory(
     pos_on_path = 0.0
     trajectory_local = []
     pos_on_path_log = []
+    path_end_mm = milling_path.length()
+    if final_pos_on_path_mm is None:
+        stop_pos_on_path_mm = path_end_mm
+    else:
+        stop_pos_on_path_mm = min(float(final_pos_on_path_mm), path_end_mm)
 
-    while pos_on_path <= milling_path.length():
+    while pos_on_path <= stop_pos_on_path_mm:
         trajectory_local.append(milling_path.points_at_distances(np.array([pos_on_path]))[:, 0])
         pos_on_path_log.append(pos_on_path)
-        pos_on_path += feed_speed_mm_s * dt
+        local_feed_speed_mm_s = float(milling_path.feed_at_distances(np.array([pos_on_path]))[0])
+        local_feed_speed_mm_s = max(local_feed_speed_mm_s, float(min_feed_speed_mm_s))
+        pos_on_path += local_feed_speed_mm_s * dt
 
     return np.asarray(trajectory_local), np.asarray(pos_on_path_log)
 
