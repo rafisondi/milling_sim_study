@@ -25,3 +25,25 @@ Examples:
 - `python inspect_trajectory.py --list`
 - `python inspect_trajectory.py --run-id 20260308_190829`
 - `python inspect_trajectory.py --run-id 20260308_190829 --plot-realized-tool-history`
+
+
+### Root folder incompatibilties
+If we run into issues of not finding the correct root folder we can create a launch.json file (VSCode):
+```
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    }
+  ]
+}
+```
