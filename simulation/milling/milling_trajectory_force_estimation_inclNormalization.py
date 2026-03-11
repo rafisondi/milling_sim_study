@@ -5,9 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from milling_data import EXPERIMENTS_DIR, load_json_dict, load_run_df, planned_waypoints_full_with_start, project_waypoints_to_s, resolve_run_paths
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTS_DIR = REPO_ROOT / "data" / "experiments"
 GRADIENT_DIR = EXPERIMENTS_DIR / "gradients" / "20260307_123434__origin_20260306_211831__left_20260306_221950__right_20260306_232207"
 
 DEFAULT_ORIGIN_RUN = "20260306_211831__8a45c8c78e24__rpm833p3__feed40p000__fs10000"
@@ -18,7 +17,6 @@ TARGET_ROLE = "left"  # "left" or "right"
 TARGET_OFFSET_MM = 0.3
 SHOW_PLOTS = True
 REL_ERR_MIN_MEAS_N = 1.0
-WORKPIECE_WIDTH_Y_MM = 150.0
 MAX_WAYPOINT_LABELS = 52
 ENABLE_OSCILLATION_FORCE_PLOT = True
 
@@ -30,34 +28,6 @@ def load_gradient_bundle(gradient_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame
     gxy = pd.read_csv(gxy_path)
     gs = pd.read_csv(gs_path)
     return gxy, gs
-
-
-def resolve_run_paths(role: str, run_name: str) -> tuple[str, Path, Path, Path]:
-    exp_dir = EXPERIMENTS_DIR / run_name
-    exp_csv = exp_dir / "experiment_data.csv"
-    trace_candidates = sorted(exp_dir.glob(f"path_trace_{role}.csv")) or sorted(exp_dir.glob("path_trace*.csv"))
-    trace_csv = trace_candidates[0] if trace_candidates else exp_dir / f"path_trace_{role}.csv"
-    settings_hash = run_name.split("__")[1]
-    params_json = EXPERIMENTS_DIR / "settings" / settings_hash / "params.json"
-    return run_name, exp_csv, trace_csv, params_json
-
-
-def load_run(exp_csv: Path, trace_csv: Path) -> pd.DataFrame:
-    df = pd.read_csv(exp_csv)
-    tr = pd.read_csv(trace_csv)
-
-    if len(tr) == len(df):
-        df["s_mm"] = tr["position_along_path_mm"].to_numpy(dtype=float)
-        df["x_mm"] = tr["tool_center_x_mm"].to_numpy(dtype=float)
-        df["y_mm"] = tr["tool_center_y_mm"].to_numpy(dtype=float)
-        return df
-
-    t = df["time_s"].to_numpy(dtype=float)
-    df["s_mm"] = np.interp(t, tr["time_s"].to_numpy(dtype=float), tr["position_along_path_mm"].to_numpy(dtype=float))
-    df["x_mm"] = np.interp(t, tr["time_s"].to_numpy(dtype=float), tr["tool_center_x_mm"].to_numpy(dtype=float))
-    df["y_mm"] = np.interp(t, tr["time_s"].to_numpy(dtype=float), tr["tool_center_y_mm"].to_numpy(dtype=float))
-    return df
-
 
 def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
     angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
@@ -99,7 +69,7 @@ def rmse_mae(meas: np.ndarray, pred: np.ndarray) -> tuple[float, float]:
 
 
 def load_params(path: Path) -> dict:
-    return json.load(open(path, encoding="utf-8"))
+    return load_json_dict(path)
 
 
 def feed_per_tooth(params: dict) -> float:
@@ -203,43 +173,6 @@ def nominal_actual_xy(df: pd.DataFrame, mask: np.ndarray) -> tuple[np.ndarray, n
 
     x_nom, y_nom = to_arrays(df.loc[mask], ["x_mm", "y_mm"])
     return x_nom, y_nom, x_nom, y_nom
-
-
-def planned_waypoints_full_with_start(x_offset_mm: float = 0.0, y_offset_mm: float = 0.0) -> np.ndarray:
-    path_coordinates = np.array(
-        [
-            [-20.0, 7.0], [0.0, 7.0], [20.0, 8.0], [30.0, 6.5], [40.0, 7.5], [65.0, 0.0], [80.0, 1.5],
-            [85.0, 3.5], [92.0, 4.0], [98.0, 2.0], [105.0, -4.0], [105.0, -18.0], [95.0, -25.0], [70.0, -27.0],
-            [40.0, -28.0], [40.0, -30.0], [45.0, -31.0], [85.0, -33.0], [93.0, -40.0], [95.0, -50.0], [95.0, -60.0],
-        ],
-        dtype=float,
-    )
-    path_start_coordinates = np.array(
-        [
-            [5.0, -190.0], [5.0, -150.0], [5.0, -100.0], [5.0, -50.0], [5.0, 0.0],
-            [5.0, 5.0], [3.0, 23.0], [-16.0, 30.0], [-30.0, 21.0], [-30.0, 12.0],
-        ],
-        dtype=float,
-    )
-
-    mirrored = np.array([1.0, -1.0]) * np.flip(path_coordinates, axis=0) - np.array([0.0, WORKPIECE_WIDTH_Y_MM])
-    waypoints = np.concatenate([path_start_coordinates, path_coordinates, mirrored], axis=0)
-    waypoints[:, 0] += float(x_offset_mm)
-    waypoints[:, 1] += float(y_offset_mm)
-    return waypoints
-
-
-def project_waypoints_to_origin_s(waypoint_xy: np.ndarray, origin_raw: pd.DataFrame) -> np.ndarray:
-    trace_xy = origin_raw[["x_mm", "y_mm"]].to_numpy(dtype=float)
-    trace_s = origin_raw["s_mm"].to_numpy(dtype=float)
-
-    s_i = np.zeros(len(waypoint_xy), dtype=float)
-    for i, wp in enumerate(waypoint_xy):
-        d2 = np.sum((trace_xy - wp) ** 2, axis=1)
-        s_i[i] = trace_s[int(np.argmin(d2))]
-
-    return np.maximum.accumulate(s_i)
-
 
 def add_waypoint_axis(ax: plt.Axes, waypoint_s: np.ndarray, waypoint_ids: np.ndarray):
     for s_i in waypoint_s:
@@ -350,11 +283,13 @@ def main():
     offset_mm = float(TARGET_OFFSET_MM)
 
     gxy, gs = load_gradient_bundle(GRADIENT_DIR)
-    origin_name, origin_exp, origin_trace, origin_params = resolve_run_paths("origin", DEFAULT_ORIGIN_RUN)
-    target_name, target_exp, target_trace, target_params = resolve_run_paths(TARGET_ROLE, DEFAULT_TARGET_RUN)
+    origin_dir, _, _, origin_params = resolve_run_paths(DEFAULT_ORIGIN_RUN, role_hint="origin")
+    target_dir, _, _, target_params = resolve_run_paths(DEFAULT_TARGET_RUN, role_hint=TARGET_ROLE)
+    origin_name = origin_dir.name
+    target_name = target_dir.name
 
-    origin_raw = load_run(origin_exp, origin_trace)
-    target_raw = load_run(target_exp, target_trace)
+    origin_raw = load_run_df(origin_name, role_hint="origin", include_xy=True)
+    target_raw = load_run_df(target_name, role_hint=TARGET_ROLE, include_xy=True)
     origin_params_dict = load_params(origin_params)
     target_params_dict = load_params(target_params)
     print_run_params(origin_name, target_name, origin_params_dict, target_params_dict)
@@ -406,7 +341,7 @@ def main():
         x_offset_mm=float(origin_params_dict.get("path_x_offset_mm", 0.0)),
         y_offset_mm=float(origin_params_dict.get("path_y_offset_mm", 0.0)),
     )
-    waypoint_s = project_waypoints_to_origin_s(waypoint_xy, origin_raw)
+    waypoint_s = project_waypoints_to_s(waypoint_xy, origin_raw)
     waypoint_ids = np.arange(1, len(waypoint_s) + 1, dtype=int)
 
     fig_traj, ax_traj = plt.subplots(figsize=(8, 6))

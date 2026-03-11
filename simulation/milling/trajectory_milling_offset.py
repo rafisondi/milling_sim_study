@@ -1,21 +1,12 @@
-import os
 import shutil
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from eraser_of_matter import milling_workpiece
-from GeopmetryStandalone import Area2D
+from milling_data import generate_chafli_trajectory, load_workpiece_vertices_from_pickle
 from utils.save_utils import save_experiment_csv, save_params, write_to_experimental_log
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXTENDED_WORKPIECE_DIR = REPO_ROOT / "extended_workpiece"
-if str(EXTENDED_WORKPIECE_DIR) not in sys.path:
-    sys.path.append(str(EXTENDED_WORKPIECE_DIR))
-
-from milling_path import MillingPath
 
 DT = 1e-4
 SAMPLES_PER_PERIOD = 720
@@ -61,32 +52,6 @@ params_base = {
     "workpiece_pickle": WORKPIECE_PICKLE,
     "trajectory_offset_mm": TRAJECTORY_OFFSET_MM,
 }
-
-
-def load_workpiece_vertices_from_pickle(path: str) -> np.ndarray:
-    area = Area2D.load_from_disk(path)
-    pts = area.get_boundary_points()
-    arr = np.array([[p.xyz_in_array()[0], p.xyz_in_array()[2]] for p in pts])
-    return arr.T
-
-
-def generate_chafli_trajectory(path_csv: str) -> tuple[np.ndarray, np.ndarray]:
-    df = pd.read_csv(path_csv, index_col=0)
-
-    path = MillingPath(df.to_numpy(), axial_cutting_dept=AXIAL_CUTTING_DEPTH_MM, feed_curve=FEED_SPEED_MM_S)
-
-    pos = 0.0
-    traj = []
-    log = []
-
-    while pos <= path.length():
-        traj.append(path.points_at_distances(np.array([pos]))[:, 0])
-        log.append(pos)
-        pos += FEED_SPEED_MM_S * DT
-
-    return np.asarray(traj), np.asarray(log)
-
-
 def offset_by_normals(path_xy: np.ndarray, offset: float, side: str) -> np.ndarray:
     x, y = path_xy[:, 0], path_xy[:, 1]
     tx, ty = np.gradient(x), np.gradient(y)
@@ -181,7 +146,12 @@ def run_trajectory(label, traj_mm, path_log, vertices):
 
 if __name__ == "__main__":
     vertices = load_workpiece_vertices_from_pickle(WORKPIECE_PICKLE)
-    traj_origin, pos_log = generate_chafli_trajectory(MILLING_PATH_CSV)
+    traj_origin, pos_log = generate_chafli_trajectory(
+        MILLING_PATH_CSV,
+        axial_cutting_depth_mm=AXIAL_CUTTING_DEPTH_MM,
+        feed_speed_mm_s=FEED_SPEED_MM_S,
+        dt=DT,
+    )
 
     trajectories = {
         "origin": traj_origin,

@@ -1,54 +1,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-try:
-    import matplotlib.pyplot as plt
-except ModuleNotFoundError:
-    plt = None
+
+import matplotlib.pyplot as plt
+
+
+from milling_data import EXPERIMENTS_DIR, load_run_params, resolve_run_dir
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTS_DIR = REPO_ROOT / "data" / "experiments"
-
-
-def find_latest_run_dir(base_dir: Path) -> Path:
-    run_dirs = [
-        p
-        for p in base_dir.iterdir()
-        if p.is_dir() and (p / "experiment_data.csv").exists() and p.name[0:8].isdigit()
-    ]
-    if not run_dirs:
-        raise FileNotFoundError(f"No run directories with experiment_data.csv found in: {base_dir}")
-    return sorted(run_dirs)[-1]
-
-
-def resolve_run_dir(run_name: str | None) -> Path:
-    if run_name is None:
-        return find_latest_run_dir(EXPERIMENTS_DIR)
-    run_dir = Path(run_name)
-    if not run_dir.is_absolute():
-        run_dir = EXPERIMENTS_DIR / run_name
-    if not run_dir.exists():
-        raise FileNotFoundError(f"Run directory not found: {run_dir}")
-    return run_dir
-
-
-def load_run_params(run_dir: Path) -> dict:
-    parts = run_dir.name.split("__")
-    if len(parts) < 2:
-        return {}
-    settings_hash = parts[1]
-    params_path = EXPERIMENTS_DIR / "settings" / settings_hash / "params.json"
-    if not params_path.exists():
-        return {}
-    with open(params_path, encoding="utf-8") as f:
-        return json.load(f)
 
 
 def get_oscillatory_xy_mm(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, str]:
@@ -133,7 +98,7 @@ def main() -> None:
     fy, ay = fft_single_sided(dy_mm, fs_hz)
     fr, ar = fft_single_sided(dr_mm, fs_hz)
 
-    params = load_run_params(run_dir)
+    params = load_run_params(run_dir, missing_ok=True)
     spindle_hz = abs(float(params.get("rpm", 0.0))) / 60.0 if params else None
     tooth_pass_hz = spindle_hz * float(params.get("z_teeth", 0.0)) if params and "z_teeth" in params else None
 

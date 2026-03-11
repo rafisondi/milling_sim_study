@@ -1,4 +1,3 @@
-import argparse
 from datetime import datetime
 import json
 from pathlib import Path
@@ -7,64 +6,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from milling_data import (
+    EXPERIMENTS_DIR,
+    SETTINGS_DIR,
+    load_run_df,
+    load_trace_df,
+    load_run_params,
+    planned_waypoints_full_with_start,
+    project_waypoints_to_s,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTS_DIR = REPO_ROOT / "data" / "experiments"
-SETTINGS_DIR = EXPERIMENTS_DIR / "settings"
 GRADIENTS_DIR = EXPERIMENTS_DIR / "gradients"
 
-WORKPIECE_WIDTH_Y_MM = 150.0
 MAX_WAYPOINT_LABELS = 52
 
 # Defaults from the latest offset simulation batch.
 DEFAULT_ORIGIN_RUN = "20260306_211831__8a45c8c78e24__rpm833p3__feed40p000__fs10000"
 DEFAULT_LEFT_RUN = "20260306_221950__c636af8ee28e__rpm833p3__feed40p000__fs10000"
 DEFAULT_RIGHT_RUN = "20260306_232207__a443bc2674a4__rpm833p3__feed40p000__fs10000"
-
-
-def load_run(run_folder: str) -> tuple[pd.DataFrame, dict]:
-    exp_dir = EXPERIMENTS_DIR / run_folder
-    params_hash = run_folder.split("__")[1]
-    params_path = SETTINGS_DIR / params_hash / "params.json"
-    with open(params_path, encoding="utf-8") as f:
-        params = json.load(f)
-
-    exp_csv = exp_dir / "experiment_data.csv"
-    df = pd.read_csv(exp_csv)
-
-    required = {"time_s", "tool_orientation", "fmill_x_N", "fmill_y_N"}
-    missing = required.difference(df.columns)
-    if missing:
-        raise ValueError(f"{exp_csv} missing columns: {sorted(missing)}")
-
-    trace_candidates = sorted(exp_dir.glob("path_trace*.csv"))
-    if trace_candidates:
-        trace_df = pd.read_csv(trace_candidates[0])
-        if "position_along_path_mm" in trace_df.columns and len(trace_df) == len(df):
-            df["s_mm"] = trace_df["position_along_path_mm"].to_numpy(dtype=float)
-        elif {"time_s", "position_along_path_mm"}.issubset(trace_df.columns):
-            df["s_mm"] = np.interp(
-                df["time_s"].to_numpy(dtype=float),
-                trace_df["time_s"].to_numpy(dtype=float),
-                trace_df["position_along_path_mm"].to_numpy(dtype=float),
-            )
-        else:
-            df["s_mm"] = np.arange(len(df), dtype=float)
-    else:
-        df["s_mm"] = np.arange(len(df), dtype=float)
-
-    return df, params
-
-
-def load_trace_df(run_folder: str) -> pd.DataFrame:
-    exp_dir = EXPERIMENTS_DIR / run_folder
-    trace_candidates = sorted(exp_dir.glob("path_trace*.csv"))
-    
-    trace_df = pd.read_csv(trace_candidates[0])
-    required = {"position_along_path_mm", "tool_center_x_mm", "tool_center_y_mm"}
-    
-    return trace_df
-
+DEFAULT_OFFSET_MM = None
 
 def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
     angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
@@ -120,73 +80,6 @@ def interpolate_trace_xy_to_s(origin_trace_df: pd.DataFrame, s_common: np.ndarra
     x = np.interp(s_common, s_trace, x_trace)
     y = np.interp(s_common, s_trace, y_trace)
     return x, y
-
-
-def planned_waypoints_full_with_start(x_offset_mm: float = 0.0, y_offset_mm: float = 0.0) -> np.ndarray:
-    path_coordinates = np.array(
-        [
-            [-20.0, 7.0],
-            [0.0, 7.0],
-            [20.0, 8.0],
-            [30.0, 6.5],
-            [40.0, 7.5],
-            [65.0, 0.0],
-            [80.0, 1.5],
-            [85.0, 3.5],
-            [92.0, 4.0],
-            [98.0, 2.0],
-            [105.0, -4.0],
-            [105.0, -18.0],
-            [95.0, -25.0],
-            [70.0, -27.0],
-            [40.0, -28.0],
-            [40.0, -30.0],
-            [45.0, -31.0],
-            [85.0, -33.0],
-            [93.0, -40.0],
-            [95.0, -50.0],
-            [95.0, -60.0],
-        ],
-        dtype=float,
-    )
-    path_start_coordinates = np.array(
-        [
-            [5.0, -190.0],
-            [5.0, -150.0],
-            [5.0, -100.0],
-            [5.0, -50.0],
-            [5.0, 0.0],
-            [5.0, 5.0],
-            [3.0, 23.0],
-            [-16.0, 30.0],
-            [-30.0, 21.0],
-            [-30.0, 12.0],
-        ],
-        dtype=float,
-    )
-    path_coordinates_mirrored_y = np.array([1.0, -1.0]) * np.flip(path_coordinates, axis=0) - np.array(
-        [0.0, WORKPIECE_WIDTH_Y_MM]
-    )
-    path_coordinates_full_with_start = np.concatenate(
-        [path_start_coordinates, path_coordinates, path_coordinates_mirrored_y], axis=0
-    )
-    path_coordinates_full_with_start[:, 0] += float(x_offset_mm)
-    path_coordinates_full_with_start[:, 1] += float(y_offset_mm)
-    return path_coordinates_full_with_start
-
-
-def project_waypoints_to_origin_s(waypoint_xy: np.ndarray, df_trace_origin: pd.DataFrame) -> np.ndarray:
-    trace_xy = df_trace_origin[["tool_center_x_mm", "tool_center_y_mm"]].to_numpy(dtype=float)
-    trace_s = df_trace_origin["position_along_path_mm"].to_numpy(dtype=float)
-    if len(waypoint_xy) == 0 or len(trace_xy) == 0:
-        return np.array([], dtype=float)
-
-    s_i = np.zeros(len(waypoint_xy), dtype=float)
-    for i, wp in enumerate(waypoint_xy):
-        d2 = np.sum((trace_xy - wp) ** 2, axis=1)
-        s_i[i] = trace_s[int(np.argmin(d2))]
-    return np.maximum.accumulate(s_i)
-
 
 def add_waypoint_axis(
     ax: plt.Axes,
@@ -273,38 +166,30 @@ def save_gradient_outputs(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Load origin/left/right offset runs, bin force per revolution, and compute chain-rule force Jacobian."
-        )
-    )
-    parser.add_argument("--origin-run", default=DEFAULT_ORIGIN_RUN, help="Origin run folder name.")
-    parser.add_argument("--left-run", default=DEFAULT_LEFT_RUN, help="Left run folder name.")
-    parser.add_argument("--right-run", default=DEFAULT_RIGHT_RUN, help="Right run folder name.")
-    parser.add_argument(
-        "--offset-mm",
-        type=float,
-        default=None,
-        help="Offset per side in mm. If omitted, uses params['trajectory_offset_mm'].",
-    )
-    args = parser.parse_args()
+    origin_run = DEFAULT_ORIGIN_RUN
+    left_run = DEFAULT_LEFT_RUN
+    right_run = DEFAULT_RIGHT_RUN
 
-    origin_df, origin_params = load_run(args.origin_run)
-    left_df, left_params = load_run(args.left_run)
-    right_df, right_params = load_run(args.right_run)
-    origin_trace_df = load_trace_df(args.origin_run)
+    required_cols = {"time_s", "tool_orientation", "fmill_x_N", "fmill_y_N"}
+    origin_df = load_run_df(origin_run, required_cols=required_cols)
+    left_df = load_run_df(left_run, required_cols=required_cols)
+    right_df = load_run_df(right_run, required_cols=required_cols)
+    origin_params = load_run_params(origin_run)
+    left_params = load_run_params(left_run)
+    right_params = load_run_params(right_run)
+    origin_trace_df = load_trace_df(origin_run)
 
-    print(f"Loaded origin run: {args.origin_run} (variant={origin_params.get('trajectory_variant', 'origin')})")
-    print(f"Loaded left   run: {args.left_run} (variant={left_params.get('trajectory_variant', 'left')})")
-    print(f"Loaded right  run: {args.right_run} (variant={right_params.get('trajectory_variant', 'right')})")
+    print(f"Loaded origin run: {origin_run} (variant={origin_params.get('trajectory_variant', 'origin')})")
+    print(f"Loaded left   run: {left_run} (variant={left_params.get('trajectory_variant', 'left')})")
+    print(f"Loaded right  run: {right_run} (variant={right_params.get('trajectory_variant', 'right')})")
 
-    offset_mm = args.offset_mm
+    offset_mm = DEFAULT_OFFSET_MM
     if offset_mm is None:
         offset_mm = float(left_params.get("trajectory_offset_mm", np.nan))
         if not np.isfinite(offset_mm) or offset_mm <= 0:
             offset_mm = float(right_params.get("trajectory_offset_mm", np.nan))
     if not np.isfinite(offset_mm) or offset_mm <= 0:
-        raise ValueError("Could not determine valid offset. Pass --offset-mm explicitly.")
+        raise ValueError("Could not determine a valid offset. Set DEFAULT_OFFSET_MM explicitly.")
 
     origin_rev = full_revolution_average(origin_df)
     left_rev = full_revolution_average(left_df)
@@ -367,9 +252,9 @@ def main():
     )
 
     save_gradient_outputs(
-        origin_run=args.origin_run,
-        left_run=args.left_run,
-        right_run=args.right_run,
+        origin_run=origin_run,
+        left_run=left_run,
+        right_run=right_run,
         offset_mm=offset_mm,
         origin_params=origin_params,
         left_params=left_params,
@@ -382,7 +267,7 @@ def main():
         x_offset_mm=float(origin_params.get("path_x_offset_mm", 0.0)),
         y_offset_mm=float(origin_params.get("path_y_offset_mm", 0.0)),
     )
-    waypoint_s = project_waypoints_to_origin_s(waypoint_xy, origin_trace_df)
+    waypoint_s = project_waypoints_to_s(waypoint_xy, origin_trace_df)
     waypoint_ids = np.arange(1, len(waypoint_s) + 1, dtype=int)
 
     fig_traj, ax_traj = plt.subplots(figsize=(8, 7))

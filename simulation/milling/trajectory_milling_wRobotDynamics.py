@@ -1,28 +1,10 @@
-import os
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-import os
-from pathlib import Path
-
+from milling_data import generate_chafli_trajectory, load_workpiece_vertices_from_pickle
 from utils.save_utils import save_experiment_csv, save_params, write_to_experimental_log
 from utils.dynamics_utils import load_macro_from_npz, MacroOscillatorParams, dynamics, RungeKutta4
 from eraser_of_matter import milling_workpiece
-from GeopmetryStandalone import Area2D
-
-
-
-# Make extended_workpiece/ importable when running this file from repo root.
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXTENDED_WORKPIECE_DIR = REPO_ROOT / "extended_workpiece"
-if str(EXTENDED_WORKPIECE_DIR) not in sys.path:
-    sys.path.append(str(EXTENDED_WORKPIECE_DIR))
-
-from milling_path import MillingPath 
-
 
 # -------------------------
 # Global config
@@ -93,39 +75,6 @@ params = {
     "linearized_model_npz": LINEARIZED_MODEL_NPZ,
     "micro_mass_diag_kg": 80.0,
 }
-
-
-def load_workpiece_vertices_from_pickle(pickle_path: str) -> np.ndarray:
-    workpiece_area = Area2D.load_from_disk(pickle_path)
-    boundary_points_vec = workpiece_area.get_boundary_points()
-    boundary_points = np.array([[b.xyz_in_array()[0], b.xyz_in_array()[2]] for b in boundary_points_vec])
-    return boundary_points.T
-
-
-def generate_chafli_trajectory(path_csv: str) -> tuple[np.ndarray, np.ndarray]:
-    milling_path_df = pd.read_csv(path_csv, index_col=0)
-
-    milling_path = MillingPath(
-        milling_path_df.to_numpy(),
-        axial_cutting_dept=AXIAL_CUTTING_DEPTH_MM,
-        feed_curve=FEED_SPEED_MM_S,
-        offset=PATH_OFFSET_MM,
-        offset_side=PATH_OFFSET_SIDE,
-    )
-
-    pos_on_path = 0.0
-    trajectory_local = []
-    pos_on_path_log = []
-
-    while pos_on_path <= milling_path.length():
-        trajectory_local.append(milling_path.points_at_distances(np.array([pos_on_path]))[:, 0])
-        pos_on_path_log.append(pos_on_path)
-        pos_on_path += FEED_SPEED_MM_S * DT
-
-    return np.asarray(trajectory_local), np.asarray(pos_on_path_log)
-
-
-
 if __name__ == "__main__":
     M2, C2, K2, _ = load_macro_from_npz(LINEARIZED_MODEL_NPZ, axes=(0, 1))
     M_micro = np.eye(2) * params["micro_mass_diag_kg"]
@@ -133,7 +82,14 @@ if __name__ == "__main__":
     p_osc = MacroOscillatorParams(M=Mtot, C=C2, K=K2)
 
     workpiece_vertices = load_workpiece_vertices_from_pickle(WORKPIECE_PICKLE)
-    trajectory_local_mm, pos_on_path_mm = generate_chafli_trajectory(MILLING_PATH_CSV)
+    trajectory_local_mm, pos_on_path_mm = generate_chafli_trajectory(
+        MILLING_PATH_CSV,
+        axial_cutting_depth_mm=AXIAL_CUTTING_DEPTH_MM,
+        feed_speed_mm_s=FEED_SPEED_MM_S,
+        dt=DT,
+        path_offset_mm=PATH_OFFSET_MM,
+        path_offset_side=PATH_OFFSET_SIDE,
+    )
 
     milling_process = milling_workpiece(workpiece_vertices, axial_cutting_depth=AXIAL_CUTTING_DEPTH_MM)
     milling_process.number_of_teeth = params["z_teeth"]

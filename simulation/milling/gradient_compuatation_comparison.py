@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from milling_data import load_run_df
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPERIMENTS_DIR = REPO_ROOT / "data" / "experiments"
 
 # Keep these defaults as placeholders; pass explicit run names from CLI.
 DEFAULT_ORIGIN_RUN = "20260306_211831__8a45c8c78e24__rpm833p3__feed40p000__fs10000"
@@ -15,41 +15,6 @@ DEFAULT_DX_PLUS_RUN = ""
 DEFAULT_DX_MINUS_RUN = ""
 DEFAULT_DY_PLUS_RUN = ""
 DEFAULT_DY_MINUS_RUN = ""
-
-
-def load_run_df(run_folder: str) -> pd.DataFrame:
-    exp_dir = EXPERIMENTS_DIR / run_folder
-    if not exp_dir.exists():
-        raise FileNotFoundError(f"Run folder not found: {exp_dir}")
-
-    exp_csv = exp_dir / "experiment_data.csv"
-    if not exp_csv.exists():
-        raise FileNotFoundError(f"Missing experiment_data.csv: {exp_csv}")
-
-    df = pd.read_csv(exp_csv)
-    required = {"time_s", "tool_orientation", "fmill_x_N", "fmill_y_N"}
-    missing = required.difference(df.columns)
-    if missing:
-        raise ValueError(f"{exp_csv} missing columns: {sorted(missing)}")
-
-    trace_candidates = sorted(exp_dir.glob("path_trace*.csv"))
-    if trace_candidates:
-        tr = pd.read_csv(trace_candidates[0])
-        if "position_along_path_mm" in tr.columns and len(tr) == len(df):
-            df["s_mm"] = tr["position_along_path_mm"].to_numpy(dtype=float)
-        elif {"time_s", "position_along_path_mm"}.issubset(tr.columns):
-            df["s_mm"] = np.interp(
-                df["time_s"].to_numpy(dtype=float),
-                tr["time_s"].to_numpy(dtype=float),
-                tr["position_along_path_mm"].to_numpy(dtype=float),
-            )
-        else:
-            df["s_mm"] = np.arange(len(df), dtype=float)
-    else:
-        df["s_mm"] = np.arange(len(df), dtype=float)
-
-    return df
-
 
 def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
     angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
@@ -141,7 +106,7 @@ def main() -> None:
 
     curves = {}
     for name, run in run_map.items():
-        df = load_run_df(run)
+        df = load_run_df(run, required_cols={"time_s", "tool_orientation", "fmill_x_N", "fmill_y_N"})
         if args.use_raw:
             curves[name] = df.rename(columns={"fmill_x_N": "fx_N", "fmill_y_N": "fy_N"})[["s_mm", "fx_N", "fy_N"]]
         else:
