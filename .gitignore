@@ -17,5 +17,11 @@ ECHO is off.
 .DS_Store
 # Custom
 Optimized_robot-milling-feed-planning/
-data/
+data/experiments/
 excel/
+data/experimental_log.txt
+data/paths/Workpiece_long_milling_path.csv
+data/paths/Workpiece_long_with_start_milling_path copy.csv
+data/paths/Workpiece_long_with_start_milling_path.pdf
+data/paths/Workpiece_long_with_start.pickle
+data/paths/Workpiece_long.pickle
