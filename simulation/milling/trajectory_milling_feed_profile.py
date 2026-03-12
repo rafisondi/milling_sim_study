@@ -4,6 +4,7 @@ from pathlib import Path
 
 from eraser_of_matter import milling_workpiece
 from milling_data import generate_chafli_trajectory, load_workpiece_vertices_from_pickle
+from utils.dynamics_utils import load_macro_from_npz, MacroOscillatorParams, dynamics, RungeKutta4
 from utils.save_utils import save_experiment_csv, save_params, write_to_experimental_log
 
 # -------------------------
@@ -31,6 +32,9 @@ PATH_OFFSET_SIDE = "left"
 USE_PRECOMPUTED_FEED_PROFILE = True
 FEED_PROFILE_CSV = "optimized_feed/optimization_offline_cc/Optimal_feed_curve.csv"
 TRAJECTORY_FINAL_S_MM = 200
+USE_ROBOT_DYNAMICS = True
+LINEARIZED_MODEL_NPZ = "linearized_operational_space_xyz.npz"
+MICRO_MASS_DIAG_KG = 80.0
 
 # Save locations
 OUTPUT_DIR = "data/experiments"
@@ -105,13 +109,27 @@ params = {
     "workpiece_pickle": WORKPIECE_PICKLE,
     "path_offset_mm": PATH_OFFSET_MM,
     "path_offset_side": PATH_OFFSET_SIDE,
+
+    # compliant-base model
+    "use_robot_dynamics": USE_ROBOT_DYNAMICS,
+    "linearized_model_npz": LINEARIZED_MODEL_NPZ if USE_ROBOT_DYNAMICS else None,
+    "micro_mass_diag_kg": MICRO_MASS_DIAG_KG if USE_ROBOT_DYNAMICS else None,
 }
 if __name__ == "__main__":
     precomputed_feed_curve = None
+    p_osc = None
+    Mtot = None
+    C2 = None
+    K2 = None
     if USE_PRECOMPUTED_FEED_PROFILE:
         precomputed_feed_curve = load_precomputed_feed_curve(FEED_PROFILE_CSV)
     final_s_mm = resolve_final_path_distance_mm(precomputed_feed_curve, TRAJECTORY_FINAL_S_MM)
     params["trajectory_final_s_mm"] = final_s_mm
+    if USE_ROBOT_DYNAMICS:
+        M2, C2, K2, _ = load_macro_from_npz(LINEARIZED_MODEL_NPZ, axes=(0, 1))
+        M_micro = np.eye(2) * MICRO_MASS_DIAG_KG
+        Mtot = M2 + M_micro
+        p_osc = MacroOscillatorParams(M=Mtot, C=C2, K=K2)
 
     workpiece_vertices = load_workpiece_vertices_from_pickle(WORKPIECE_PICKLE)
     trajectory_local_mm, pos_on_path_mm = generate_chafli_trajectory(
@@ -136,6 +154,8 @@ if __name__ == "__main__":
     if N > 1:
         planned_feed_hist_mm_s[0] = planned_feed_hist_mm_s[1]
 
+    state = np.zeros((4, 1))
+    u = np.zeros((2, 1))
     x_hist = np.zeros((N, 2))
     u_hist = np.zeros((N, 2))
     fmill_hist = np.zeros((N, 2))
@@ -158,34 +178,59 @@ if __name__ == "__main__":
             f"Planned feed range: {planned_feed_hist_mm_s.min():.3f} .. "
             f"{planned_feed_hist_mm_s.max():.3f} mm/s"
         )
+    if USE_ROBOT_DYNAMICS:
+        print(f"Linearized model: {params['linearized_model_npz']}")
+        print(f"M diag (kg): {np.diag(Mtot)}")
+        print(f"C diag (N s/m): {np.diag(C2)}")
+        print(f"K diag (N/m): {np.diag(K2)}")
 
     for i in range(N):
         t = t_hist[i]
         spindle_angle = t * params["omega_rad_s"]
+        tool_center_nominal_mm = trajectory_local_mm[i]
+        if USE_ROBOT_DYNAMICS:
+            tool_center_mm = tool_center_nominal_mm + state[0:2, 0] * 1e3
+        else:
+            tool_center_mm = tool_center_nominal_mm
 
         milling_process.erase_step(
-            trajectory_local_mm[i],
+            tool_center_mm,
             spindle_angle,
             direction=params["spindle_spin"],
             t=t,
         )
 
         if i > 1:
-            milling_forces = milling_process.total_milling_force[0:2]
+            milling_forces = np.asarray(milling_process.total_milling_force[0:2], dtype=float).reshape(2, 1)
         else:
-            milling_forces = np.zeros(2)
+            milling_forces = np.zeros((2, 1))
 
-        fmill_hist[i, :] = milling_forces
+        if USE_ROBOT_DYNAMICS:
+            state = RungeKutta4(dynamics, t, state, DT, p_osc, u, milling_forces)
+
+        fmill_hist[i, :] = milling_forces[:, 0]
+        x_hist[i, :] = state[0:2, 0]
+        u_hist[i, :] = u[:, 0]
+        tool_center_actual_hist_mm[i, :] = tool_center_mm
         phi_tool_hist[i] = spindle_angle
 
         if i % PRINT_EVERY_N == 0:
             progress = 100.0 * i / max(1, N - 1)
-            print(
-                f"Sim state: {progress:5.1f}% t={t:.3f} s, "
-                f"tool_center={trajectory_local_mm[i]}, "
-                f"planned_feed={planned_feed_hist_mm_s[i]:.3f} mm/s, "
-                f"milling_force={milling_forces}"
-            )
+            if USE_ROBOT_DYNAMICS:
+                print(
+                    f"Sim state: {progress:5.1f}% t={t:.3f} s, "
+                    f"tool_center={tool_center_mm}, "
+                    f"planned_feed={planned_feed_hist_mm_s[i]:.3f} mm/s, "
+                    f"x={state[0:2, 0]}, "
+                    f"milling_force={milling_forces[:, 0]}"
+                )
+            else:
+                print(
+                    f"Sim state: {progress:5.1f}% t={t:.3f} s, "
+                    f"tool_center={tool_center_mm}, "
+                    f"planned_feed={planned_feed_hist_mm_s[i]:.3f} mm/s, "
+                    f"milling_force={milling_forces[:, 0]}"
+                )
 
     if SAVE_EXPERIMENT_DATA:
         settings_hash, params_dir = save_params(params=params, base_dir=PARAMS_DIR)
@@ -215,8 +260,10 @@ if __name__ == "__main__":
                 "time_s": t_hist,
                 "position_along_path_mm": pos_on_path_mm,
                 "planned_feed_mm_s": planned_feed_hist_mm_s,
-                "tool_center_x_mm": trajectory_local_mm[:, 0],
-                "tool_center_y_mm": trajectory_local_mm[:, 1],
+                "tool_center_nominal_x_mm": tool_center_nominal_hist_mm[:, 0],
+                "tool_center_nominal_y_mm": tool_center_nominal_hist_mm[:, 1],
+                "tool_center_x_mm": tool_center_actual_hist_mm[:, 0],
+                "tool_center_y_mm": tool_center_actual_hist_mm[:, 1],
                 "fmill_x_N": fmill_hist[:, 0],
                 "fmill_y_N": fmill_hist[:, 1],
             }
