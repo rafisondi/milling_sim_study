@@ -10,7 +10,7 @@ from utils.save_utils import save_experiment_csv, save_params, write_to_experime
 # Global config
 # -------------------------
 DT = 1e-4
-SAMPLES_PER_PERIOD = 360 
+SAMPLES_PER_PERIOD = 180 #  360 
 PRINT_EVERY_N = 2000
 SAVE_EXPERIMENT_DATA = True
 
@@ -23,14 +23,14 @@ AXIAL_CUTTING_DEPTH_MM = 1.0
 FEED_SPEED_MM_S = 40.0
 MIN_FEED_SPEED_MM_S = 1.0
 SPINDLE_SPIN = -1
-Z_TEETH = 1
+Z_TEETH = 8
 
 PATH_OFFSET_MM = None
 PATH_OFFSET_SIDE = "left"
 
 USE_PRECOMPUTED_FEED_PROFILE = True
 FEED_PROFILE_CSV = "optimized_feed/optimization_offline_cc/Optimal_feed_curve.csv"
-TRAJECTORY_FINAL_S_MM = None
+TRAJECTORY_FINAL_S_MM = 200
 
 # Save locations
 OUTPUT_DIR = "data/experiments"
@@ -50,8 +50,6 @@ def load_precomputed_feed_curve(csv_path: str | Path) -> np.ndarray:
     feed_curve_df = pd.read_csv(csv_path)
     required_cols = {"x_support", "feed_curve"}
     missing_cols = required_cols.difference(feed_curve_df.columns)
-    if missing_cols:
-        raise ValueError(f"{csv_path} is missing required columns: {sorted(missing_cols)}")
 
     feed_curve = feed_curve_df[["x_support", "feed_curve"]].to_numpy(dtype=float)
     order = np.argsort(feed_curve[:, 0], kind="stable")
@@ -60,9 +58,6 @@ def load_precomputed_feed_curve(csv_path: str | Path) -> np.ndarray:
     unique_support_mask = np.ones(len(feed_curve), dtype=bool)
     unique_support_mask[1:] = np.diff(feed_curve[:, 0]) > 0.0
     feed_curve = feed_curve[unique_support_mask]
-
-    if len(feed_curve) < 2:
-        raise ValueError(f"{csv_path} must contain at least two unique x_support values.")
 
     return feed_curve
 
