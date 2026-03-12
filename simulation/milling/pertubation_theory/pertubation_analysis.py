@@ -3,6 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from eraser_of_matter import milling_workpiece
 from utils.analytical_mechanistic_milling import (
@@ -18,18 +19,31 @@ WORKPIECE = np.array([[0, 0], [50, 0], [50, 50], [0, 50]]).T
 SHOW_PLOT = True
 
 
-def compute_revolution_average_from_angle(angle_rad, signal_2d):
-    angle_rad = angle_rad.reshape(-1)
-    signal_2d = signal_2d.reshape(len(signal_2d), 2)
-    ang = np.unwrap(angle_rad)
-    rev_idx = np.floor((ang - ang[0]) / (2 * np.pi)).astype(int)
-    out = np.full_like(signal_2d, np.nan)
-    for r in np.unique(rev_idx):
-        m = rev_idx == r
-        if np.all(np.isnan(signal_2d[m])):
-            continue
-        out[m] = np.nanmean(signal_2d[m], axis=0)
-    return out, rev_idx
+def binned_average(df: pd.DataFrame, bin_size: int, cols, time_col="time_s") -> pd.DataFrame:
+    n_bins = len(df) // bin_size
+    if n_bins <= 0:
+        raise ValueError(f"Not enough samples ({len(df)}) for bin_size={bin_size}")
+
+    df = df.iloc[: n_bins * bin_size].copy()
+    arr = df[[time_col, *cols]].to_numpy(dtype=float).reshape(n_bins, bin_size, len(cols) + 1)
+    avg = np.nanmean(arr, axis=1)
+
+    out = pd.DataFrame(avg, columns=[time_col, *cols])
+    out["rev_idx"] = np.arange(n_bins, dtype=int)
+    out["n_samples"] = bin_size
+    return out[[time_col, "rev_idx", "n_samples", *cols]]
+
+
+def compute_binned_average_signal(time_s: np.ndarray, signal_2d: np.ndarray, bin_size: int) -> tuple[np.ndarray, np.ndarray]:
+    df = pd.DataFrame(
+        {
+            "time_s": time_s,
+            "c0": signal_2d[:, 0],
+            "c1": signal_2d[:, 1],
+        }
+    )
+    averaged = binned_average(df, bin_size=bin_size, cols=["c0", "c1"])
+    return averaged["time_s"].to_numpy(dtype=float), averaged[["c0", "c1"]].to_numpy(dtype=float)
 
 
 def extract_settings_hash(csv_path):
@@ -263,14 +277,15 @@ fest_inst_ss = np.where(inst_mask[:, None], fest_inst, np.nan)
 x_ss = np.where(steady_mask[:, None], x_hist, np.nan)
 udot_ss = np.where(steady_mask[:, None], udot_world, np.nan)
 
-fmill_rev, rev_idx = compute_revolution_average_from_angle(tool_orientation, fmill_ss)
-fzero_rev, _ = compute_revolution_average_from_angle(tool_orientation, fzero_ss)
-fpert_avg_rev, _ = compute_revolution_average_from_angle(tool_orientation, fpert_avg_ss)
-fest_avg_rev, _ = compute_revolution_average_from_angle(tool_orientation, fest_avg_ss)
-fanalyt_rev, _ = compute_revolution_average_from_angle(tool_orientation, fanalyt_ss)
-fest_inst_rev, _ = compute_revolution_average_from_angle(tool_orientation, fest_inst_ss)
-x_rev, _ = compute_revolution_average_from_angle(tool_orientation, x_ss)
-udot_rev, _ = compute_revolution_average_from_angle(tool_orientation, udot_ss)
+bin_size = int(round(1.0 / max(float(params["rev_per_s"]) * float(params["dt"]), 1e-12)))
+t_rev, fmill_rev = compute_binned_average_signal(t, fmill_ss, bin_size)
+_, fzero_rev = compute_binned_average_signal(t, fzero_ss, bin_size)
+_, fpert_avg_rev = compute_binned_average_signal(t, fpert_avg_ss, bin_size)
+_, fest_avg_rev = compute_binned_average_signal(t, fest_avg_ss, bin_size)
+_, fanalyt_rev = compute_binned_average_signal(t, fanalyt_ss, bin_size)
+_, fest_inst_rev = compute_binned_average_signal(t, fest_inst_ss, bin_size)
+_, x_rev = compute_binned_average_signal(t, x_ss, bin_size)
+_, udot_rev = compute_binned_average_signal(t, udot_ss, bin_size)
 
 steady_mask_rev = np.isfinite(fmill_rev).all(axis=1) & np.isfinite(fzero_rev).all(axis=1)
 inst_mask_rev = np.isfinite(fmill_rev).all(axis=1) & np.isfinite(fest_inst_rev).all(axis=1) & np.isfinite(fanalyt_rev).all(axis=1)
@@ -307,8 +322,8 @@ if SHOW_PLOT:
     ax_inspect.plot(t, fanalyt[:, 1], "--", label="Fy analytical", linewidth=1.5)
     ax_inspect.plot(t, fzero[:, 0], ":", label="Fx zero-order", linewidth=2.0)
     ax_inspect.plot(t, fzero[:, 1], ":", label="Fy zero-order", linewidth=2.0)
-    ax_inspect.plot(t, fmill_rev[:, 0], "-.", linewidth=2.0, label="Fx simulated (avg/rev)")
-    ax_inspect.plot(t, fmill_rev[:, 1], "-.", linewidth=2.0, label="Fy simulated (avg/rev)")
+    ax_inspect.plot(t_rev, fmill_rev[:, 0], "-.", linewidth=2.0, label="Fx simulated (avg/rev)")
+    ax_inspect.plot(t_rev, fmill_rev[:, 1], "-.", linewidth=2.0, label="Fy simulated (avg/rev)")
     ax_inspect.set_xlabel("Time [s]")
     ax_inspect.set_ylabel("Force [N]")
     ax_inspect.set_title("Milling force signals")
@@ -330,10 +345,10 @@ if SHOW_PLOT:
 
     fig_rev, ax_rev = plt.subplots(2, 1, sharex=True, figsize=(10, 8))
     for i in range(2):
-        ax_rev[i].plot(t, fmill_rev[:, i], label="measured avg/rev", linewidth=1.8)
-        ax_rev[i].plot(t, fzero_rev[:, i], "--", label="zero-order avg/rev", linewidth=1.5)
-        ax_rev[i].plot(t, fest_avg_rev[:, i], "-.", label="averaged estimate", linewidth=1.5)
-        ax_rev[i].plot(t, fest_inst_rev[:, i], ":", label="instantaneous estimate avg/rev", linewidth=1.3)
+        ax_rev[i].plot(t_rev, fmill_rev[:, i], label="measured avg/rev", linewidth=1.8)
+        ax_rev[i].plot(t_rev, fzero_rev[:, i], "--", label="zero-order avg/rev", linewidth=1.5)
+        ax_rev[i].plot(t_rev, fest_avg_rev[:, i], "-.", label="averaged estimate", linewidth=1.5)
+        ax_rev[i].plot(t_rev, fest_inst_rev[:, i], ":", label="instantaneous estimate avg/rev", linewidth=1.3)
         ax_rev[i].set_ylabel(f"{labels[i]} [N]")
         ax_rev[i].grid(alpha=0.3)
     ax_rev[-1].set_xlabel("time [s]")
@@ -344,7 +359,7 @@ if SHOW_PLOT:
     fig_u, ax_u = plt.subplots(2, 1, sharex=True, figsize=(10, 6))
     for i in range(2):
         ax_u[i].plot(t, udot_world[:, i], color="0.75", linewidth=0.8, label="u_dot raw")
-        ax_u[i].plot(t, udot_rev[:, i], color="0.15", linewidth=1.4, label="u_dot avg/rev")
+        ax_u[i].plot(t_rev, udot_rev[:, i], color="0.15", linewidth=1.4, label="u_dot avg/rev")
         ax_u[i].set_ylabel(f"u_dot_{'xy'[i]} [mm/s]")
         ax_u[i].grid(alpha=0.3)
     ax_u[-1].set_xlabel("time [s]")
@@ -355,7 +370,7 @@ if SHOW_PLOT:
     fig_x, ax_x = plt.subplots(2, 1, sharex=True, figsize=(10, 5))
     for i in range(2):
         ax_x[i].plot(t, x_hist[:, i] * 1e3, color="0.75", linewidth=0.8, label="oscillation raw")
-        ax_x[i].plot(t, x_rev[:, i] * 1e3, color="0.15", linewidth=1.4, label="oscillation avg/rev")
+        ax_x[i].plot(t_rev, x_rev[:, i] * 1e3, color="0.15", linewidth=1.4, label="oscillation avg/rev")
         ax_x[i].set_ylabel(f"x_{'xy'[i]} [mm]")
         ax_x[i].grid(alpha=0.3)
     ax_x[-1].set_xlabel("time [s]")

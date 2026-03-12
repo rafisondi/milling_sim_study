@@ -120,6 +120,64 @@ def load_run_df(
     return df
 
 
+def samples_per_revolution(params: dict) -> int:
+    if "dt" in params:
+        dt = float(params["dt"])
+    elif "sampling_frequency_hz" in params:
+        dt = 1.0 / float(params["sampling_frequency_hz"])
+    elif "fs_hz" in params:
+        dt = 1.0 / float(params["fs_hz"])
+    else:
+        raise ValueError("Run parameters must include dt or sampling frequency to compute samples per revolution.")
+
+    if "rev_per_s" in params:
+        rev_per_s = abs(float(params["rev_per_s"]))
+    elif "rpm" in params:
+        rev_per_s = abs(float(params["rpm"])) / 60.0
+    elif "spindle_speed_rpm" in params:
+        rev_per_s = abs(float(params["spindle_speed_rpm"])) / 60.0
+    else:
+        raise ValueError("Run parameters must include rev_per_s or rpm to compute samples per revolution.")
+
+    samples = int(round(1.0 / max(rev_per_s * dt, 1e-12)))
+    if samples <= 0:
+        raise ValueError(f"Computed invalid samples_per_revolution={samples} from params={params}")
+    return samples
+
+
+def binned_average(
+    df: pd.DataFrame,
+    bin_size: int,
+    cols: list[str],
+    time_col: str = "time_s",
+    extra_cols: list[str] | None = None,
+    *,
+    use_nanmean: bool = False,
+) -> pd.DataFrame:
+    if bin_size <= 0:
+        raise ValueError(f"bin_size must be positive, got {bin_size}")
+
+    ordered_cols = [time_col, *(extra_cols or []), *cols]
+    mean_cols = list(dict.fromkeys(ordered_cols))
+    missing = [col for col in mean_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Dataframe missing columns required for binned_average: {missing}")
+
+    n_bins = len(df) // bin_size
+    if n_bins <= 0:
+        raise ValueError(f"Not enough samples ({len(df)}) for bin_size={bin_size}")
+
+    df_trimmed = df.iloc[: n_bins * bin_size].copy()
+    values = df_trimmed[mean_cols].to_numpy(dtype=float).reshape(n_bins, bin_size, len(mean_cols))
+    reducer = np.nanmean if use_nanmean else np.mean
+    averaged = reducer(values, axis=1)
+
+    out = pd.DataFrame(averaged, columns=mean_cols)
+    out["rev_idx"] = np.arange(n_bins, dtype=int)
+    out["n_samples"] = bin_size
+    return out[[time_col, "rev_idx", "n_samples", *[col for col in mean_cols if col != time_col]]]
+
+
 def load_workpiece_vertices_from_pickle(pickle_path: str | Path) -> np.ndarray:
     workpiece_area = Area2D.load_from_disk(pickle_path)
     boundary_points_vec = workpiece_area.get_boundary_points()

@@ -5,7 +5,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from milling_data import EXPERIMENTS_DIR, load_json_dict, load_run_df, planned_waypoints_full_with_start, project_waypoints_to_s, resolve_run_paths
+from milling_data import (
+    EXPERIMENTS_DIR,
+    binned_average,
+    load_json_dict,
+    load_run_df,
+    planned_waypoints_full_with_start,
+    project_waypoints_to_s,
+    resolve_run_paths,
+    samples_per_revolution,
+)
 
 DEFAULT_ORIGIN_RUN = "20260306_211831__8a45c8c78e24__rpm833p3__feed40p000__fs10000"
 DEFAULT_TARGET_RUN = "20260308_123323__9cc66a5310ea__rpm833p3__feed60p000__fs10000"
@@ -14,23 +23,14 @@ SHOW_PLOTS = True
 MAX_WAYPOINT_LABELS = 52
 REL_ERR_MIN_MEAS_N = 0.5
 
-def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
-    angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
-    rev_idx = np.floor((angle - angle[0]) / (2.0 * np.pi)).astype(int)
-    rev_idx -= rev_idx.min()
-
-    return (
-        df.assign(rev_idx=rev_idx)
-        .groupby("rev_idx", as_index=False)
-        .agg(
-            time_s=("time_s", "mean"),
-            s_mm=("s_mm", "mean"),
-            x_mm=("x_mm", "mean"),
-            y_mm=("y_mm", "mean"),
-            fx_avg_N=("fmill_x_N", "mean"),
-            fy_avg_N=("fmill_y_N", "mean"),
-        )
-    )
+def full_revolution_average(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    bin_size = samples_per_revolution(params)
+    return binned_average(
+        df,
+        bin_size=bin_size,
+        cols=["fmill_x_N", "fmill_y_N"],
+        extra_cols=["s_mm", "x_mm", "y_mm"],
+    ).rename(columns={"fmill_x_N": "fx_avg_N", "fmill_y_N": "fy_avg_N"})
 
 
 def interp_on_s(df: pd.DataFrame, s_common: np.ndarray, cols: list[str]) -> pd.DataFrame:
@@ -269,8 +269,8 @@ def main():
     target_fz = feed_per_tooth(target_params_dict)
     scale_origin_to_target = target_fz / origin_fz
 
-    origin_rev = full_revolution_average(origin_raw)
-    target_rev = full_revolution_average(target_raw)
+    origin_rev = full_revolution_average(origin_raw, origin_params_dict)
+    target_rev = full_revolution_average(target_raw, target_params_dict)
 
     s_common = common_s(origin_rev, target_rev)
     origin_i = interp_on_s(origin_rev, s_common, ["x_mm", "y_mm", "fx_avg_N", "fy_avg_N"])

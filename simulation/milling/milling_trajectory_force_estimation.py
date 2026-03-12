@@ -5,7 +5,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from milling_data import EXPERIMENTS_DIR, load_json_dict, load_run_df, planned_waypoints_full_with_start, project_waypoints_to_s, resolve_run_paths
+from milling_data import (
+    EXPERIMENTS_DIR,
+    binned_average,
+    load_json_dict,
+    load_run_df,
+    planned_waypoints_full_with_start,
+    project_waypoints_to_s,
+    resolve_run_paths,
+    samples_per_revolution,
+)
 
 GRADIENT_DIR = EXPERIMENTS_DIR / "gradients" / "20260307_123434__origin_20260306_211831__left_20260306_221950__right_20260306_232207"
 
@@ -28,23 +37,14 @@ def load_gradient_bundle(gradient_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame
     gs = pd.read_csv(gs_path)
     return gxy, gs
 
-def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
-    angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
-    rev_idx = np.floor((angle - angle[0]) / (2.0 * np.pi)).astype(int)
-    rev_idx -= rev_idx.min()
-
-    return (
-        df.assign(rev_idx=rev_idx)
-        .groupby("rev_idx", as_index=False)
-        .agg(
-            time_s=("time_s", "mean"),
-            s_mm=("s_mm", "mean"),
-            x_mm=("x_mm", "mean"),
-            y_mm=("y_mm", "mean"),
-            fx_avg_N=("fmill_x_N", "mean"),
-            fy_avg_N=("fmill_y_N", "mean"),
-        )
-    )
+def full_revolution_average(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    bin_size = samples_per_revolution(params)
+    return binned_average(
+        df,
+        bin_size=bin_size,
+        cols=["fmill_x_N", "fmill_y_N"],
+        extra_cols=["s_mm", "x_mm", "y_mm"],
+    ).rename(columns={"fmill_x_N": "fx_avg_N", "fmill_y_N": "fy_avg_N"})
 
 
 def interp_on_s(df: pd.DataFrame, s_common: np.ndarray, cols: list[str]) -> pd.DataFrame:
@@ -180,8 +180,8 @@ def main():
     target_params_dict = load_params(target_params)
     print_run_params(origin_name, target_name, origin_params_dict, target_params_dict)
 
-    origin_rev = full_revolution_average(origin_raw)
-    target_rev = full_revolution_average(target_raw)
+    origin_rev = full_revolution_average(origin_raw, origin_params_dict)
+    target_rev = full_revolution_average(target_raw, target_params_dict)
 
     s_common = common_s(origin_rev, target_rev, gxy)
 

@@ -9,11 +9,13 @@ import pandas as pd
 from milling_data import (
     EXPERIMENTS_DIR,
     SETTINGS_DIR,
+    binned_average,
     load_run_df,
-    load_trace_df,
     load_run_params,
+    load_trace_df,
     planned_waypoints_full_with_start,
     project_waypoints_to_s,
+    samples_per_revolution,
 )
 
 GRADIENTS_DIR = EXPERIMENTS_DIR / "gradients"
@@ -26,22 +28,14 @@ DEFAULT_LEFT_RUN = "20260306_221950__c636af8ee28e__rpm833p3__feed40p000__fs10000
 DEFAULT_RIGHT_RUN = "20260306_232207__a443bc2674a4__rpm833p3__feed40p000__fs10000"
 DEFAULT_OFFSET_MM = None
 
-def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
-    angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
-    rev_idx = np.floor((angle - angle[0]) / (2.0 * np.pi)).astype(int)
-    rev_idx = rev_idx - rev_idx.min()
-
-    return (
-        df.assign(rev_idx=rev_idx)
-        .groupby("rev_idx", as_index=False)
-        .agg(
-            time_s=("time_s", "mean"),
-            s_mm=("s_mm", "mean"),
-            fx_avg_N=("fmill_x_N", "mean"),
-            fy_avg_N=("fmill_y_N", "mean"),
-            n_samples=("rev_idx", "size"),
-        )
-    )
+def full_revolution_average(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    bin_size = samples_per_revolution(params)
+    return binned_average(
+        df,
+        bin_size=bin_size,
+        cols=["fmill_x_N", "fmill_y_N"],
+        extra_cols=["s_mm"],
+    ).rename(columns={"fmill_x_N": "fx_avg_N", "fmill_y_N": "fy_avg_N"})
 
 
 def align_multiple_binned_by_s(revavg_by_name: dict[str, pd.DataFrame]) -> tuple[np.ndarray, dict[str, pd.DataFrame]]:
@@ -191,9 +185,9 @@ def main():
     if not np.isfinite(offset_mm) or offset_mm <= 0:
         raise ValueError("Could not determine a valid offset. Set DEFAULT_OFFSET_MM explicitly.")
 
-    origin_rev = full_revolution_average(origin_df)
-    left_rev = full_revolution_average(left_df)
-    right_rev = full_revolution_average(right_df)
+    origin_rev = full_revolution_average(origin_df, origin_params)
+    left_rev = full_revolution_average(left_df, left_params)
+    right_rev = full_revolution_average(right_df, right_params)
     print(f"Revolution bins: origin={len(origin_rev)}, left={len(left_rev)}, right={len(right_rev)}")
     print(f"Offset used for normal derivative: {offset_mm:.6f} mm")
 

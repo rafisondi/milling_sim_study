@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from milling_data import load_run_df
+from milling_data import binned_average, load_run_df, load_run_params, samples_per_revolution
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -16,20 +16,14 @@ DEFAULT_DX_MINUS_RUN = ""
 DEFAULT_DY_PLUS_RUN = ""
 DEFAULT_DY_MINUS_RUN = ""
 
-def full_revolution_average(df: pd.DataFrame) -> pd.DataFrame:
-    angle = np.unwrap(df["tool_orientation"].to_numpy(dtype=float))
-    rev_idx = np.floor((angle - angle[0]) / (2.0 * np.pi)).astype(int)
-    rev_idx -= rev_idx.min()
-
-    return (
-        df.assign(rev_idx=rev_idx)
-        .groupby("rev_idx", as_index=False)
-        .agg(
-            s_mm=("s_mm", "mean"),
-            fx_N=("fmill_x_N", "mean"),
-            fy_N=("fmill_y_N", "mean"),
-        )
-    )
+def full_revolution_average(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    bin_size = samples_per_revolution(params)
+    return binned_average(
+        df,
+        bin_size=bin_size,
+        cols=["fmill_x_N", "fmill_y_N"],
+        extra_cols=["s_mm"],
+    ).rename(columns={"fmill_x_N": "fx_N", "fmill_y_N": "fy_N"})
 
 
 def align_on_common_s(series_by_name: dict[str, pd.DataFrame]) -> tuple[np.ndarray, dict[str, pd.DataFrame]]:
@@ -110,7 +104,7 @@ def main() -> None:
         if args.use_raw:
             curves[name] = df.rename(columns={"fmill_x_N": "fx_N", "fmill_y_N": "fy_N"})[["s_mm", "fx_N", "fy_N"]]
         else:
-            curves[name] = full_revolution_average(df)
+            curves[name] = full_revolution_average(df, load_run_params(run))
 
     s_common, aligned = align_on_common_s(curves)
 
