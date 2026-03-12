@@ -20,7 +20,7 @@ MILLING_PATH_CSV = "data/paths/Workpiece_long_with_start_milling_path.csv"
 WORKPIECE_PICKLE = "data/paths/Workpiece_long_with_start.pickle"
 
 # Process settings
-AXIAL_CUTTING_DEPTH_MM = 1.0
+AXIAL_CUTTING_DEPTH_MM = 5.0
 FEED_SPEED_MM_S = 40.0
 MIN_FEED_SPEED_MM_S = 1.0
 SPINDLE_SPIN = -1
@@ -32,7 +32,7 @@ PATH_OFFSET_SIDE = "left"
 USE_PRECOMPUTED_FEED_PROFILE = True
 FEED_PROFILE_CSV = "optimized_feed/optimization_offline_cc/Optimal_feed_curve.csv"
 TRAJECTORY_FINAL_S_MM = 200
-USE_ROBOT_DYNAMICS = True
+USE_ROBOT_DYNAMICS = False
 LINEARIZED_MODEL_NPZ = "linearized_operational_space_xyz.npz"
 MICRO_MASS_DIAG_KG = 80.0
 
@@ -146,7 +146,8 @@ if __name__ == "__main__":
 
     milling_process = milling_workpiece(workpiece_vertices, axial_cutting_depth=AXIAL_CUTTING_DEPTH_MM)
     milling_process.number_of_teeth = params["z_teeth"]
-    milling_process.slice_height = params["axial_cutting_depth_mm"]
+    # milling_process.slice_height = params["axial_cutting_depth_mm"]
+    milling_process.axial_cutting_depth = params["axial_cutting_depth_mm"]
 
     N = len(trajectory_local_mm)
     t_hist = np.arange(N) * DT

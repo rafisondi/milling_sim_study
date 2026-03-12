@@ -76,7 +76,6 @@ def run_trajectory(label, traj_mm, path_log, vertices):
 
     process = milling_workpiece(vertices, axial_cutting_depth=AXIAL_CUTTING_DEPTH_MM)
     process.number_of_teeth = params["z_teeth"]
-    process.slice_height = params["axial_cutting_depth_mm"]
 
     N = len(traj_mm)
     t_hist = np.arange(N) * DT

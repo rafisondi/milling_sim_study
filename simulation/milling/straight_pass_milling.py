@@ -184,11 +184,10 @@ if __name__ == "__main__":
     wp_p4 = WORKPIECE_P4_MM
     
     workpiece = WorkpieceGeometry(wp_p1, wp_p2, wp_p3, wp_p4)
-    milling_process = milling_workpiece(workpiece.xy)
+    milling_process = milling_workpiece(workpiece.xy, axial_cutting_depth=params["axial_cutting_depth_mm"])
     milling_process.diameter_end_mill   = params["tool_diameter_mm"]
     milling_process.number_of_teeth     = params["z_teeth"]
     milling_process.radius_tool         = params["tool_radius_mm"]
-    milling_process.slice_height        = params["axial_cutting_depth_mm"]
     
     # # ---- Trajectory configuration ----
     # FEED_DIR = np.array([0.0, 1.0])

@@ -271,12 +271,11 @@ if __name__ == "__main__":
         WORKPIECE_P4_MM
     )
 
-    milling_process = milling_workpiece(workpiece.xy)
+    milling_process = milling_workpiece(workpiece.xy, axial_cutting_depth=params["axial_cutting_depth_mm"])
 
     milling_process.diameter_end_mill = params["tool_diameter_mm"]
     milling_process.number_of_teeth = params["z_teeth"]
     milling_process.radius_tool = params["tool_radius_mm"]
-    milling_process.slice_height = params["axial_cutting_depth_mm"]
 
 
     FEED_DIR = np.array([1.0,0.0])

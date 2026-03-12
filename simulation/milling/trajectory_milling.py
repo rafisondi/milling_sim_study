@@ -82,7 +82,6 @@ if __name__ == "__main__":
 
     milling_process = milling_workpiece(workpiece_vertices, axial_cutting_depth=AXIAL_CUTTING_DEPTH_MM)
     milling_process.number_of_teeth = params["z_teeth"]
-    milling_process.slice_height = params["axial_cutting_depth_mm"]
 
     N = len(trajectory_local_mm)
     t_hist = np.arange(N) * DT
