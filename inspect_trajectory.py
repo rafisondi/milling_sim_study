@@ -6,9 +6,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from simulation.milling.milling_data import (
+    generate_chafli_trajectory,
+    planned_waypoints_full_with_start,
+    project_waypoints_to_s,
+)
+
 
 EXPERIMENT_DIR = Path("data/experiments")
 SETTINGS_DIR = EXPERIMENT_DIR / "settings"
+MAX_WAYPOINT_LABELS = 52
 
 
 def build_experiment_description(params, run_id):
@@ -139,6 +146,39 @@ def get_trajectory_xy_mm(df_exp, df_trace):
     raise RuntimeError("No trajectory XY columns found in path_trace.csv or experiment_data.csv")
 
 
+def load_precomputed_feed_curve(csv_path: str | Path) -> np.ndarray:
+    feed_curve_df = pd.read_csv(csv_path)
+    feed_curve = feed_curve_df[["x_support", "feed_curve"]].to_numpy(dtype=float)
+    order = np.argsort(feed_curve[:, 0], kind="stable")
+    feed_curve = feed_curve[order]
+    unique_support_mask = np.ones(len(feed_curve), dtype=bool)
+    unique_support_mask[1:] = np.diff(feed_curve[:, 0]) > 0.0
+    return feed_curve[unique_support_mask]
+
+
+def reconstruct_expected_trajectory(params: dict) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    required = {"milling_path_csv", "axial_cutting_depth_mm", "feed_speed_mm_s", "dt"}
+    if not required.issubset(params):
+        return None, None
+
+    feed_curve = None
+    if params.get("use_precomputed_feed_profile") and params.get("feed_profile_csv"):
+        feed_curve = load_precomputed_feed_curve(params["feed_profile_csv"])
+
+    trajectory_local_mm, pos_on_path_mm = generate_chafli_trajectory(
+        params["milling_path_csv"],
+        axial_cutting_depth_mm=float(params["axial_cutting_depth_mm"]),
+        feed_speed_mm_s=float(params["feed_speed_mm_s"]),
+        dt=float(params["dt"]),
+        feed_curve=feed_curve,
+        min_feed_speed_mm_s=float(params.get("min_feed_speed_mm_s", 1e-6)),
+        final_pos_on_path_mm=float(params["trajectory_final_s_mm"]) if params.get("trajectory_final_s_mm") is not None else None,
+        path_offset_mm=float(params["path_offset_mm"]) if params.get("path_offset_mm") is not None else None,
+        path_offset_side=str(params.get("path_offset_side", "left")),
+    )
+    return trajectory_local_mm, pos_on_path_mm
+
+
 def get_realized_tool_xy_mm(df_exp, df_trace):
     if {"tool_center_actual_x_mm", "tool_center_actual_y_mm"}.issubset(df_exp.columns):
         return (
@@ -151,6 +191,52 @@ def get_realized_tool_xy_mm(df_exp, df_trace):
             df_trace["tool_center_actual_y_mm"].to_numpy(),
         )
     return None, None
+
+
+def get_waypoint_times_s(trace_source: pd.DataFrame | None, params):
+    if trace_source is None:
+        return np.array([], dtype=float), np.array([], dtype=int), np.empty((0, 2), dtype=float)
+
+    required_xy_cols = {"tool_center_x_mm", "tool_center_y_mm"}
+    required_s_cols = {"position_along_path_mm", "time_s"}
+    if not (required_xy_cols.issubset(trace_source.columns) and required_s_cols.issubset(trace_source.columns)):
+        return np.array([], dtype=float), np.array([], dtype=int), np.empty((0, 2), dtype=float)
+
+    waypoint_xy = planned_waypoints_full_with_start(
+        x_offset_mm=float(params.get("path_x_offset_mm", 0.0)),
+        y_offset_mm=float(params.get("path_y_offset_mm", 0.0)),
+    )
+    waypoint_s = project_waypoints_to_s(waypoint_xy, trace_source)
+    waypoint_ids = np.arange(1, len(waypoint_s) + 1, dtype=int)
+
+    trace_base = (
+        trace_source[["position_along_path_mm", "time_s"]]
+        .sort_values("position_along_path_mm")
+        .groupby("position_along_path_mm", as_index=False)
+        .mean(numeric_only=True)
+    )
+    trace_s = trace_base["position_along_path_mm"].to_numpy(dtype=float)
+    trace_t = trace_base["time_s"].to_numpy(dtype=float)
+    waypoint_t = np.interp(waypoint_s, trace_s, trace_t)
+    return waypoint_t, waypoint_ids, waypoint_xy
+
+
+def add_waypoint_time_axis(ax: plt.Axes, waypoint_t: np.ndarray, waypoint_ids: np.ndarray, max_labels: int = MAX_WAYPOINT_LABELS):
+    for t_i in waypoint_t:
+        ax.axvline(t_i, color="k", linewidth=0.7, alpha=0.12)
+
+    if len(waypoint_t) == 0:
+        return
+
+    if len(waypoint_t) <= max_labels:
+        label_idx = np.arange(len(waypoint_t), dtype=int)
+    else:
+        label_idx = np.unique(np.linspace(0, len(waypoint_t) - 1, max_labels, dtype=int))
+
+    secax = ax.secondary_xaxis("top")
+    secax.set_xticks(waypoint_t[label_idx])
+    secax.set_xticklabels([f"S{i}" for i in waypoint_ids[label_idx]], rotation=90, fontsize=7)
+    secax.set_xlabel("Path waypoints S_i")
 
 
 def main():
@@ -183,12 +269,30 @@ def main():
         raise RuntimeError("CSV missing column 'time_s'")
 
     t = df_exp["time_s"].to_numpy()
-    x_mm, y_mm = get_trajectory_xy_mm(df_exp, df_trace)
+    nominal_traj_mm, nominal_s_mm = reconstruct_expected_trajectory(params)
+    if nominal_traj_mm is not None and len(nominal_traj_mm) == len(t):
+        x_mm = nominal_traj_mm[:, 0]
+        y_mm = nominal_traj_mm[:, 1]
+        nominal_trace = pd.DataFrame(
+            {
+                "time_s": t,
+                "position_along_path_mm": nominal_s_mm,
+                "tool_center_x_mm": x_mm,
+                "tool_center_y_mm": y_mm,
+            }
+        )
+    else:
+        x_mm, y_mm = get_trajectory_xy_mm(df_exp, df_trace)
+        nominal_trace = df_trace if df_trace is not None else df_exp
+
+    waypoint_t, waypoint_ids, waypoint_xy = get_waypoint_times_s(nominal_trace, params)
     desc = build_experiment_description(params, args.run_id)
 
     # XY trajectory
     plt.figure(figsize=(8, 8))
-    plt.plot(x_mm, y_mm, linewidth=1.2, label="Tool center trajectory (nominal)")
+    plt.plot(x_mm, y_mm, linewidth=1.2, label="Expected tool trajectory (MillingPath)")
+    if len(waypoint_xy) > 0:
+        plt.scatter(waypoint_xy[:, 0], waypoint_xy[:, 1], s=14, alpha=0.7, label="Planned waypoints")
 
     if args.plot_realized_tool_history:
         x_real_mm, y_real_mm = get_realized_tool_xy_mm(df_exp, df_trace)
@@ -209,6 +313,51 @@ def main():
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
+
+    if args.plot_realized_tool_history:
+        x_real_mm, y_real_mm = get_realized_tool_xy_mm(df_exp, df_trace)
+        if x_real_mm is not None and y_real_mm is not None:
+            fig_xy_time, axes_xy_time = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+
+            axes_xy_time[0].plot(t, x_mm, linewidth=1.2, alpha=0.85, label="x nominal")
+            axes_xy_time[0].plot(t, x_real_mm, linewidth=1.0, alpha=0.9, label="x realized")
+            axes_xy_time[0].set_ylabel("X [mm]")
+            axes_xy_time[0].set_title("Tool center X/Y vs time")
+            add_waypoint_time_axis(axes_xy_time[0], waypoint_t, waypoint_ids)
+            axes_xy_time[0].grid(True)
+            axes_xy_time[0].legend()
+
+            axes_xy_time[1].plot(t, y_mm, linewidth=1.2, alpha=0.85, label="y nominal")
+            axes_xy_time[1].plot(t, y_real_mm, linewidth=1.0, alpha=0.9, label="y realized")
+            axes_xy_time[1].set_xlabel("Time [s]")
+            axes_xy_time[1].set_ylabel("Y [mm]")
+            add_waypoint_time_axis(axes_xy_time[1], waypoint_t, waypoint_ids)
+            axes_xy_time[1].grid(True)
+            axes_xy_time[1].legend()
+
+            fig_xy_time.suptitle(desc)
+            fig_xy_time.tight_layout()
+
+            fig_xy_err, axes_xy_err = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
+            ex_mm = x_real_mm - x_mm
+            ey_mm = y_real_mm - y_mm
+
+            axes_xy_err[0].plot(t, ex_mm, linewidth=1.1, label="x error = x_realized - x_nominal")
+            axes_xy_err[0].set_ylabel("X error [mm]")
+            axes_xy_err[0].set_title("TCP position error vs nominal trajectory")
+            add_waypoint_time_axis(axes_xy_err[0], waypoint_t, waypoint_ids)
+            axes_xy_err[0].grid(True)
+            axes_xy_err[0].legend()
+
+            axes_xy_err[1].plot(t, ey_mm, linewidth=1.1, label="y error = y_realized - y_nominal")
+            axes_xy_err[1].set_xlabel("Time [s]")
+            axes_xy_err[1].set_ylabel("Y error [mm]")
+            add_waypoint_time_axis(axes_xy_err[1], waypoint_t, waypoint_ids)
+            axes_xy_err[1].grid(True)
+            axes_xy_err[1].legend()
+
+            fig_xy_err.suptitle(desc)
+            fig_xy_err.tight_layout()
 
     plotted_fx = "fmill_x_N" in df_exp.columns
     plotted_fy = "fmill_y_N" in df_exp.columns
