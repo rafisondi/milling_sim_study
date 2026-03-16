@@ -8,7 +8,8 @@ from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
 
-from milling_data import MillingPath
+from eraser_of_matter import milling_workpiece
+from milling_data import MillingPath, load_workpiece_vertices_from_pickle
 
 
 class Settings:
@@ -142,17 +143,80 @@ class Environment():
         return self.f_ext
     
 class EnvironmentMilling(Environment):
-    def __init__(self, robot: Robot):
+    def __init__(
+        self,
+        robot: Robot,
+        trajectory=None,
+        workpiece_pickle: str | Path | None = None,
+        axial_cutting_depth_mm: float = 5.0,
+        ee_name: str = "TCP",
+        samples_per_period: int = 180,
+        spindle_spin: int = -1,
+        number_of_teeth: int = 8,
+    ):
         self.t = 0
         self.robot = robot
         self.f_ext = np.zeros((6, 1))
+        self.ee_name = ee_name
+        self.trajectory = trajectory
+        self.axial_cutting_depth_mm = float(axial_cutting_depth_mm)
+        self.spindle_spin = int(spindle_spin)
+        self.number_of_teeth = int(number_of_teeth)
+        self.samples_per_period = int(samples_per_period)
+        self.omega = 0.0
+        self.milling_process = None
+        self.T_workpiece_base = None
+
+        if trajectory is not None and getattr(trajectory, "dt", 0.0) > 0.0:
+            rotation_period_s = trajectory.dt * max(self.samples_per_period, 1)
+            self.omega = self.spindle_spin * 2.0 * np.pi / max(rotation_period_s, 1e-12)
+
+        if trajectory is not None:
+            self.T_workpiece_base = np.linalg.inv(trajectory.T_base_workpiece)
+
+        if workpiece_pickle is not None:
+            workpiece_vertices = load_workpiece_vertices_from_pickle(workpiece_pickle)
+            self.milling_process = milling_workpiece(
+                workpiece_vertices,
+                axial_cutting_depth=self.axial_cutting_depth_mm,
+            )
+            self.milling_process.number_of_teeth = self.number_of_teeth
+            self.milling_process.axial_cutting_depth = self.axial_cutting_depth_mm
         
     def compute_tau_ext(self, q_full):
-        
-        # =======================================
-        ## Given TCP position and milling context calculate process forces
-        # =======================================
-        return np.zeros((len(self.robot.idx_flex), 1))
+        if self.milling_process is None or self.T_workpiece_base is None:
+            self.f_ext = np.zeros((6, 1))
+            return np.zeros((len(self.robot.idx_flex), 1))
+
+        tcp_pose = self.robot.frame_placement(np.asarray(q_full, dtype=float).reshape(-1), self.ee_name)
+        tcp_position_base = tcp_pose.translation
+        tcp_position_base_aug = np.append(tcp_position_base, 1.0)
+        tcp_position_workpiece = self.T_workpiece_base @ tcp_position_base_aug
+        tool_center_mm = tcp_position_workpiece[:2] * 1000.0
+        spindle_angle = self.t * self.omega
+
+        self.milling_process.erase_step(
+            tool_center_mm,
+            spindle_angle,
+            direction=self.spindle_spin,
+            t=self.t,
+        )
+
+        if self.t <= 2.0 * max(getattr(self.trajectory, "dt", 0.0), 1e-12):
+            milling_force_wp = np.zeros((3, 1))
+        else:
+            milling_force_wp = np.asarray(
+                self.milling_process.total_milling_force[:3],
+                dtype=float,
+            ).reshape(3, 1)
+
+        rotation_base_workpiece = self.trajectory.T_base_workpiece[:3, :3]
+        milling_force_base = rotation_base_workpiece @ milling_force_wp
+        self.f_ext = np.vstack([milling_force_base, np.zeros((3, 1))])
+
+        J = self.robot.jacobian(np.asarray(q_full, dtype=float).reshape(-1), self.ee_name)
+        tau_full = J.T @ self.f_ext
+        return tau_full[self.robot.idx_flex, :]
     
     def set_t(self, t):
         self.t = t
@@ -733,11 +797,15 @@ if __name__ == '__main__':
     
     settings = SettingsRealParameter()
     robot = Robot(settings)
-    environment = EnvironmentMilling(robot)
-    
     trajectory = TrajectoryMilling_Simple(
         robot=robot,
         trajectory_df=trajectory_df,
+        axial_cutting_depth_mm=AXIAL_CUTTING_DEPTH_MM,
+    )
+    environment = EnvironmentMilling(
+        robot,
+        trajectory=trajectory,
+        workpiece_pickle=WORKPIECE_PICKLE,
         axial_cutting_depth_mm=AXIAL_CUTTING_DEPTH_MM,
     )
 
