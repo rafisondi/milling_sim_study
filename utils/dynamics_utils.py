@@ -7,7 +7,7 @@ from pathlib import Path
 # Functions
 # -------------------------
 
-def load_macro_from_npz(npz_path, axes=(0, 1)):
+def load_macro_from_npz(npz_path, axes=None):
     npz_path = Path(npz_path)
     if not npz_path.exists():
         raise FileNotFoundError(f"Linearized model not found: {npz_path}")
@@ -16,10 +16,14 @@ def load_macro_from_npz(npz_path, axes=(0, 1)):
     Dx     = data["Dx_xyz"]      # (3,3)
     Kx     = data["Kx_xyz"]      # (3,3)
 
-    a0, a1 = axes
-    M2 = Lambda[np.ix_([a0, a1], [a0, a1])]
-    C2 = Dx[np.ix_([a0, a1], [a0, a1])]
-    K2 = Kx[np.ix_([a0, a1], [a0, a1])]
+    if axes is None:
+        axis_idx = np.arange(Lambda.shape[0], dtype=int)
+    else:
+        axis_idx = np.asarray(tuple(axes), dtype=int)
+
+    M2 = Lambda[np.ix_(axis_idx, axis_idx)]
+    C2 = Dx[np.ix_(axis_idx, axis_idx)]
+    K2 = Kx[np.ix_(axis_idx, axis_idx)]
     extras = {k: data[k] for k in data.files if k not in ["Lambda_xyz", "Dx_xyz", "Kx_xyz"]}
     return M2, C2, K2, extras
 
@@ -29,27 +33,29 @@ def load_macro_from_npz(npz_path, axes=(0, 1)):
 # -------------------------
 @dataclass
 class MacroOscillatorParams:
-    M: np.ndarray  # (2,2) total mass matrix (macro + micro)
-    C: np.ndarray  # (2,2) damping matrix
-    K: np.ndarray  # (2,2) stiffness matrix
+    M: np.ndarray
+    C: np.ndarray
+    K: np.ndarray
 
     def __post_init__(self):
         for name, arr in [("M", self.M), ("K", self.K), ("C", self.C)]:
-            if arr.shape != (2, 2):
-                raise ValueError(f"{name} must have shape (2,2), got {arr.shape}")
+            if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+                raise ValueError(f"{name} must be square, got shape {arr.shape}")
+        if not (self.M.shape == self.C.shape == self.K.shape):
+            raise ValueError(f"M, C, and K must have matching shapes, got {self.M.shape}, {self.C.shape}, {self.K.shape}")
             
             
 # -------------------------
 # Single (macro+micro) oscillator dynamics
-# State: [x(2); xdot(2)]  (4x1)
-# Input: u (2x1) direct force
-# Disturbance: f_milling (2x1)
+# State: [x(n); xdot(n)]
+# Input: u (n x 1) direct force
+# Disturbance: f_ext (n x 1)
 # -------------------------
 def dynamics(t, state, p_osc: MacroOscillatorParams, u, f_ext):
-    x    = state[0:2]
-    xdot = state[2:4]
-    # M xddot = -C xdot - K x + u + f_ext
-    rhs  = -p_osc.C @ xdot - p_osc.K @ x + u + f_ext
+    n = p_osc.M.shape[0]
+    x = state[0:n]
+    xdot = state[n : 2 * n]
+    rhs = -p_osc.C @ xdot - p_osc.K @ x + u + f_ext
     xddot = np.linalg.solve(p_osc.M, rhs)
     return np.vstack((xdot, xddot))
 

@@ -18,6 +18,7 @@ SAVE_EXPERIMENT_DATA = True
 # Chafli geometry/path assets
 MILLING_PATH_CSV = "data/paths/Workpiece_long_with_start_milling_path.csv"
 WORKPIECE_PICKLE = "data/paths/Workpiece_long_with_start.pickle"
+FEEDFORWARD_FORCE_CSV = "data/feedforward/20260312_105807__feedforward_force.csv"
 
 # Process settings
 AXIAL_CUTTING_DEPTH_MM = 5.0
@@ -32,9 +33,10 @@ PATH_OFFSET_SIDE = "left"
 USE_PRECOMPUTED_FEED_PROFILE = True
 FEED_PROFILE_CSV = "optimized_feed/optimization_offline_cc/Optimal_feed_curve.csv"
 TRAJECTORY_FINAL_S_MM = 200
-USE_ROBOT_DYNAMICS = False
+USE_ROBOT_DYNAMICS = True
+USE_FEEDFORWARD_FORCE = True
 LINEARIZED_MODEL_NPZ = "linearized_operational_space_xyz.npz"
-MICRO_MASS_DIAG_KG = 80.0
+MICRO_MASS_DIAG_KG = 80.0 * 0.0
 
 # Save locations
 OUTPUT_DIR = "data/experiments"
@@ -77,6 +79,31 @@ def resolve_final_path_distance_mm(
     return None
 
 
+def load_feedforward_force(csv_path: str | Path) -> pd.DataFrame:
+    ff_df = pd.read_csv(csv_path)
+    required_cols = {"time_s", "Fx_feedforward_time_N", "Fy_feedforward_time_N"}
+    missing_cols = required_cols.difference(ff_df.columns)
+    if missing_cols:
+        raise ValueError(f"Feedforward CSV missing columns: {sorted(missing_cols)}")
+    return ff_df.sort_values("time_s", kind="stable").reset_index(drop=True)
+
+
+def sample_feedforward_force(ff_df: pd.DataFrame, t_hist: np.ndarray) -> np.ndarray:
+    ff_time = ff_df["time_s"].to_numpy(dtype=float)
+    ff_force = ff_df[["Fx_feedforward_time_N", "Fy_feedforward_time_N"]].to_numpy(dtype=float)
+    if len(ff_df) == len(t_hist) and np.allclose(ff_time, t_hist, rtol=0.0, atol=1e-12):
+        return np.column_stack([ff_force, np.zeros(len(ff_force), dtype=float)])
+
+    sampled = np.column_stack(
+        [
+            np.interp(t_hist, ff_time, ff_force[:, 0]),
+            np.interp(t_hist, ff_time, ff_force[:, 1]),
+            np.zeros(len(t_hist), dtype=float),
+        ]
+    )
+    return sampled
+
+
 # ----- experiment dictionary -----
 params = {
     # simulation
@@ -100,6 +127,8 @@ params = {
     "use_precomputed_feed_profile": USE_PRECOMPUTED_FEED_PROFILE,
     "feed_profile_csv": FEED_PROFILE_CSV if USE_PRECOMPUTED_FEED_PROFILE else None,
     "trajectory_final_s_mm": TRAJECTORY_FINAL_S_MM,
+    "feedforward_force_csv": FEEDFORWARD_FORCE_CSV if USE_FEEDFORWARD_FORCE else None,
+    "use_feedforward_force": USE_FEEDFORWARD_FORCE,
 
     # tool / cut
     "axial_cutting_depth_mm": AXIAL_CUTTING_DEPTH_MM,
@@ -117,19 +146,22 @@ params = {
 }
 if __name__ == "__main__":
     precomputed_feed_curve = None
+    feedforward_force_df = None
     p_osc = None
     Mtot = None
-    C2 = None
-    K2 = None
+    C3 = None
+    K3 = None
     if USE_PRECOMPUTED_FEED_PROFILE:
         precomputed_feed_curve = load_precomputed_feed_curve(FEED_PROFILE_CSV)
+    if USE_FEEDFORWARD_FORCE:
+        feedforward_force_df = load_feedforward_force(FEEDFORWARD_FORCE_CSV)
     final_s_mm = resolve_final_path_distance_mm(precomputed_feed_curve, TRAJECTORY_FINAL_S_MM)
     params["trajectory_final_s_mm"] = final_s_mm
     if USE_ROBOT_DYNAMICS:
-        M2, C2, K2, _ = load_macro_from_npz(LINEARIZED_MODEL_NPZ, axes=(0, 1))
-        M_micro = np.eye(2) * MICRO_MASS_DIAG_KG
-        Mtot = M2 + M_micro
-        p_osc = MacroOscillatorParams(M=Mtot, C=C2, K=K2)
+        M3, C3, K3, _ = load_macro_from_npz(LINEARIZED_MODEL_NPZ)
+        M_micro = np.eye(3) * MICRO_MASS_DIAG_KG
+        Mtot = M3 + M_micro
+        p_osc = MacroOscillatorParams(M=Mtot, C=C3, K=K3)
 
     workpiece_vertices = load_workpiece_vertices_from_pickle(WORKPIECE_PICKLE)
     trajectory_local_mm, pos_on_path_mm = generate_chafli_trajectory(
@@ -154,14 +186,17 @@ if __name__ == "__main__":
     planned_feed_hist_mm_s = np.diff(pos_on_path_mm, prepend=pos_on_path_mm[0]) / DT
     if N > 1:
         planned_feed_hist_mm_s[0] = planned_feed_hist_mm_s[1]
+    feedforward_force_hist = np.zeros((N, 3))
+    if feedforward_force_df is not None:
+        feedforward_force_hist = sample_feedforward_force(feedforward_force_df, t_hist)
 
-    state = np.zeros((4, 1))
-    u = np.zeros((2, 1))
-    x_hist = np.zeros((N, 2))
-    u_hist = np.zeros((N, 2))
-    fmill_hist = np.zeros((N, 2))
-    tool_center_nominal_hist_mm = trajectory_local_mm.copy()
-    tool_center_actual_hist_mm = trajectory_local_mm.copy()
+    state = np.zeros((6, 1))
+    u = np.zeros((3, 1))
+    x_hist = np.zeros((N, 3))
+    u_hist = np.zeros((N, 3))
+    fmill_hist = np.zeros((N, 3))
+    tool_center_nominal_hist_mm = np.column_stack([trajectory_local_mm, np.zeros(N, dtype=float)])
+    tool_center_actual_hist_mm = tool_center_nominal_hist_mm.copy()
     phi_tool_hist = np.zeros(N)
 
     print("\n=== Trajectory Milling Simulation ===")
@@ -179,40 +214,47 @@ if __name__ == "__main__":
             f"Planned feed range: {planned_feed_hist_mm_s.min():.3f} .. "
             f"{planned_feed_hist_mm_s.max():.3f} mm/s"
         )
+    if USE_FEEDFORWARD_FORCE:
+        print(f"Feedforward force CSV: {FEEDFORWARD_FORCE_CSV}")
     if USE_ROBOT_DYNAMICS:
         print(f"Linearized model: {params['linearized_model_npz']}")
         print(f"M diag (kg): {np.diag(Mtot)}")
-        print(f"C diag (N s/m): {np.diag(C2)}")
-        print(f"K diag (N/m): {np.diag(K2)}")
+        print(f"C diag (N s/m): {np.diag(C3)}")
+        print(f"K diag (N/m): {np.diag(K3)}")
 
     for i in range(N):
         t = t_hist[i]
         spindle_angle = t * params["omega_rad_s"]
-        tool_center_nominal_mm = trajectory_local_mm[i]
+        tool_center_nominal_mm_xy = trajectory_local_mm[i]
         if USE_ROBOT_DYNAMICS:
-            tool_center_mm = tool_center_nominal_mm + state[0:2, 0] * 1e3
+            tool_center_mm_xy = tool_center_nominal_mm_xy + state[0:2, 0] * 1e3
         else:
-            tool_center_mm = tool_center_nominal_mm
+            tool_center_mm_xy = tool_center_nominal_mm_xy
 
         milling_process.erase_step(
-            tool_center_mm,
+            tool_center_mm_xy,
             spindle_angle,
             direction=params["spindle_spin"],
             t=t,
         )
 
         if i > 1:
-            milling_forces = np.asarray(milling_process.total_milling_force[0:2], dtype=float).reshape(2, 1)
+            milling_forces = np.asarray(milling_process.total_milling_force, dtype=float).reshape(3, 1)
         else:
-            milling_forces = np.zeros((2, 1))
+            milling_forces = np.zeros((3, 1))
 
         if USE_ROBOT_DYNAMICS:
+            if USE_FEEDFORWARD_FORCE:
+                u[:, 0] = -feedforward_force_hist[i]
+            else:
+                u[:, 0] = 0.0
             state = RungeKutta4(dynamics, t, state, DT, p_osc, u, milling_forces)
 
         fmill_hist[i, :] = milling_forces[:, 0]
-        x_hist[i, :] = state[0:2, 0]
+        x_hist[i, :] = state[0:3, 0]
         u_hist[i, :] = u[:, 0]
-        tool_center_actual_hist_mm[i, :] = tool_center_mm
+        tool_center_actual_hist_mm[i, 0:2] = tool_center_mm_xy
+        tool_center_actual_hist_mm[i, 2] = state[2, 0] * 1e3 if USE_ROBOT_DYNAMICS else 0.0
         phi_tool_hist[i] = spindle_angle
 
         if i % PRINT_EVERY_N == 0:
@@ -220,15 +262,17 @@ if __name__ == "__main__":
             if USE_ROBOT_DYNAMICS:
                 print(
                     f"Sim state: {progress:5.1f}% t={t:.3f} s, "
-                    f"tool_center={tool_center_mm}, "
+                    f"tool_center_xy={tool_center_mm_xy}, "
+                    f"tool_z={tool_center_actual_hist_mm[i, 2]:.6f} mm, "
                     f"planned_feed={planned_feed_hist_mm_s[i]:.3f} mm/s, "
-                    f"x={state[0:2, 0]}, "
+                    f"x={state[0:3, 0]}, "
+                    f"u_ff={u[:, 0]}, "
                     f"milling_force={milling_forces[:, 0]}"
                 )
             else:
                 print(
                     f"Sim state: {progress:5.1f}% t={t:.3f} s, "
-                    f"tool_center={tool_center_mm}, "
+                    f"tool_center_xy={tool_center_mm_xy}, "
                     f"planned_feed={planned_feed_hist_mm_s[i]:.3f} mm/s, "
                     f"milling_force={milling_forces[:, 0]}"
                 )
@@ -263,10 +307,16 @@ if __name__ == "__main__":
                 "planned_feed_mm_s": planned_feed_hist_mm_s,
                 "tool_center_nominal_x_mm": tool_center_nominal_hist_mm[:, 0],
                 "tool_center_nominal_y_mm": tool_center_nominal_hist_mm[:, 1],
+                "tool_center_nominal_z_mm": tool_center_nominal_hist_mm[:, 2],
                 "tool_center_x_mm": tool_center_actual_hist_mm[:, 0],
                 "tool_center_y_mm": tool_center_actual_hist_mm[:, 1],
+                "tool_center_z_mm": tool_center_actual_hist_mm[:, 2],
+                "u_feedforward_x_N": u_hist[:, 0],
+                "u_feedforward_y_N": u_hist[:, 1],
+                "u_feedforward_z_N": u_hist[:, 2],
                 "fmill_x_N": fmill_hist[:, 0],
                 "fmill_y_N": fmill_hist[:, 1],
+                "fmill_z_N": fmill_hist[:, 2],
             }
         ).to_csv(path_trace_csv, index=False)
 

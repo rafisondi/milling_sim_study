@@ -100,19 +100,25 @@ def save_experiment_csv(
             cols[base_name] = arr
         elif arr.ndim == 2:
             if suffixes is None:
-                suffixes = [f"_{i}" for i in range(arr.shape[1])]
+                axis_suffix_map = {
+                    2: ["_x", "_y"],
+                    3: ["_x", "_y", "_z"],
+                }
+                suffixes = axis_suffix_map.get(arr.shape[1], [f"_{i}" for i in range(arr.shape[1])])
+            if len(suffixes) != arr.shape[1]:
+                raise ValueError(f"{base_name} suffix count {len(suffixes)} does not match array width {arr.shape[1]}")
             for i in range(arr.shape[1]):
                 cols[f"{base_name}{suffixes[i]}"] = arr[:, i]
         else:
             raise ValueError(f"{base_name} must be 1D or 2D, got shape {arr.shape}")
 
-    add_2d_array(x_hist, "x", suffixes=["_x_m", "_y_m"])
-    add_2d_array(u_hist, "u", suffixes=["_x_N", "_y_N"])
-    add_2d_array(fmill_hist, "fmill", suffixes=["_x_N", "_y_N"])
-    add_2d_array(fanalyt_hist, "fanalyt", suffixes=["_x_N", "_y_N"])
-    add_2d_array(fzero_hist, "fzero", suffixes=["_x_N", "_y_N"])
-    add_2d_array(tool_center_nominal_hist_mm, "tool_center_nominal", suffixes=["_x_mm", "_y_mm"])
-    add_2d_array(tool_center_actual_hist_mm, "tool_center_actual", suffixes=["_x_mm", "_y_mm"])
+    add_2d_array(x_hist, "x", suffixes=["_x_m", "_y_m", "_z_m"][: np.asarray(x_hist).shape[1]] if x_hist is not None and np.asarray(x_hist).ndim == 2 else None)
+    add_2d_array(u_hist, "u", suffixes=["_x_N", "_y_N", "_z_N"][: np.asarray(u_hist).shape[1]] if u_hist is not None and np.asarray(u_hist).ndim == 2 else None)
+    add_2d_array(fmill_hist, "fmill", suffixes=["_x_N", "_y_N", "_z_N"][: np.asarray(fmill_hist).shape[1]] if fmill_hist is not None and np.asarray(fmill_hist).ndim == 2 else None)
+    add_2d_array(fanalyt_hist, "fanalyt", suffixes=["_x_N", "_y_N", "_z_N"][: np.asarray(fanalyt_hist).shape[1]] if fanalyt_hist is not None and np.asarray(fanalyt_hist).ndim == 2 else None)
+    add_2d_array(fzero_hist, "fzero", suffixes=["_x_N", "_y_N", "_z_N"][: np.asarray(fzero_hist).shape[1]] if fzero_hist is not None and np.asarray(fzero_hist).ndim == 2 else None)
+    add_2d_array(tool_center_nominal_hist_mm, "tool_center_nominal", suffixes=["_x_mm", "_y_mm", "_z_mm"][: np.asarray(tool_center_nominal_hist_mm).shape[1]] if tool_center_nominal_hist_mm is not None and np.asarray(tool_center_nominal_hist_mm).ndim == 2 else None)
+    add_2d_array(tool_center_actual_hist_mm, "tool_center_actual", suffixes=["_x_mm", "_y_mm", "_z_mm"][: np.asarray(tool_center_actual_hist_mm).shape[1]] if tool_center_actual_hist_mm is not None and np.asarray(tool_center_actual_hist_mm).ndim == 2 else None)
     
     cols["tool_orientation"] = np.asarray(tool_orientation_hist).reshape(-1)
 
