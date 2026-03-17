@@ -664,7 +664,14 @@ def load_precomputed_feed_curve(csv_path: str | Path) -> np.ndarray:
     return feed_curve
         
 
-def generate_xy_trajectory(path_csv, dt_resample, feed_curve):
+def generate_xy_trajectory(
+    path_csv,
+    dt_resample,
+    feed_curve,
+    *,
+    start_pos_on_path_mm: float = 0.0,
+    final_pos_on_path_mm: float | None = None,
+):
     path_df = pd.read_csv(path_csv, index_col=0)
     x = path_df["x"].to_numpy()
     y = path_df["y"].to_numpy()
@@ -684,16 +691,42 @@ def generate_xy_trajectory(path_csv, dt_resample, feed_curve):
     s_feed = s_feed[valid]
     v_feed = v_feed[valid]
 
+    s_start = max(float(start_pos_on_path_mm), 0.0)
+    path_end_mm = float(s_path[-1])
+    if final_pos_on_path_mm is None:
+        s_stop = min(float(s_feed[-1]), path_end_mm)
+    else:
+        s_stop = min(float(final_pos_on_path_mm), float(s_feed[-1]), path_end_mm)
+    if s_stop < s_start:
+        raise ValueError(
+            f"Requested trajectory interval is invalid: start={s_start:.3f} mm, stop={s_stop:.3f} mm."
+        )
+
+    support_mask = (s_feed >= s_start) & (s_feed <= s_stop)
+    s_feed_window = s_feed[support_mask]
+    v_feed_window = v_feed[support_mask]
+
+    endpoint_support = np.array([s_start, s_stop], dtype=float)
+    endpoint_feed = np.interp(endpoint_support, s_feed, v_feed)
+    s_feed_window = np.concatenate([endpoint_support[:1], s_feed_window, endpoint_support[1:]])
+    v_feed_window = np.concatenate([endpoint_feed[:1], v_feed_window, endpoint_feed[1:]])
+
+    unique_support_mask = np.ones(len(s_feed_window), dtype=bool)
+    unique_support_mask[1:] = np.diff(s_feed_window) > 0.0
+    s_feed_window = s_feed_window[unique_support_mask]
+    v_feed_window = v_feed_window[unique_support_mask]
+
     # cumulative time
-    t_feed = np.zeros_like(s_feed)
-    t_feed[1:] = np.cumsum(np.diff(s_feed) / v_feed[:-1])
+    t_feed = np.zeros_like(s_feed_window)
+    if len(t_feed) > 1:
+        t_feed[1:] = np.cumsum(np.diff(s_feed_window) / v_feed_window[:-1])
 
     # uniform sampled 
     t_uniform = np.arange(0, t_feed[-1] + dt_resample, dt_resample)
-    s_uniform = np.interp(t_uniform, t_feed, s_feed)
+    s_uniform = np.interp(t_uniform, t_feed, s_feed_window)
     x_uniform = np.interp(s_uniform, s_path, x)
     y_uniform = np.interp(s_uniform, s_path, y)
-    v_uniform = np.interp(s_uniform, s_feed, v_feed)
+    v_uniform = np.interp(s_uniform, s_feed_window, v_feed_window)
 
     return pd.DataFrame({
         "t": t_uniform,
@@ -845,19 +878,27 @@ def plot_tcp_tracking_error(trajectory: Trajectory, fkine_vec, t_eval, *, show=T
     return fig, axes
 
 if __name__ == '__main__':
-    dt_ik = 1e-2
+    dt_ik = 1e-4
     
     # Chafli geometry/path assets
     URDF_PATH_V3 =  'data/urdf/v2/Staeubli-Huynh 1.urdf'
     FEED_PROFILE_CSV = "optimized_feed/optimization_offline_cc/Optimal_feed_curve.csv"
     MILLING_PATH_CSV = "data/paths/Workpiece_long_with_start_milling_path.csv"
     WORKPIECE_PICKLE = "data/paths/Workpiece_long_with_start.pickle"
-    AXIAL_CUTTING_DEPTH_MM = 5.0 
+    AXIAL_CUTTING_DEPTH_MM = 5.0
+    START_POS_ON_PATH_MM = 150
+    FINAL_POS_ON_PATH_MM = 300
     
     feedrate_optimized = load_precomputed_feed_curve(FEED_PROFILE_CSV)
     milling_path_df = pd.read_csv(MILLING_PATH_CSV, index_col=0)
     
-    trajectory_df = generate_xy_trajectory(MILLING_PATH_CSV , dt_ik , feedrate_optimized)
+    trajectory_df = generate_xy_trajectory(
+        MILLING_PATH_CSV,
+        dt_ik,
+        feedrate_optimized,
+        start_pos_on_path_mm=START_POS_ON_PATH_MM,
+        final_pos_on_path_mm=FINAL_POS_ON_PATH_MM,
+    )
     trajecotry_xy = trajectory_df[["x", "y"]].to_numpy()
     
     
