@@ -223,6 +223,52 @@ class EnvironmentMilling(Environment):
     
 
 
+class Controller():
+    def get_ctrl_freq(self):
+        return self.ctrl_freq
+
+
+class ComplianceCompensation(Controller):
+    def __init__(
+        self,
+        ctrl_freq: float,
+        robot_model: Robot,
+        f_cutoff: float = None,
+        compliance_error_ratio: float = 0.0,
+        input_delay_samples: int = 0,
+        input_noise: bool = False,
+        fts_t_std: float = 0.01,
+        fts_f_std: float = 0.01,
+        reconstr_filter: bool = False,
+    ):
+        self.ctrl_freq = ctrl_freq
+        self.robot_model = robot_model
+        self.f_cutoff = f_cutoff
+        self.input_delay_samples = input_delay_samples
+        self.input_noise = input_noise
+        self.fts_t_std = fts_t_std
+        self.fts_f_std = fts_f_std
+        self.reconstr_filter = reconstr_filter
+
+        K_m_diag_flex = self.robot_model.K_m_diag_flex.flatten()
+        self.static_compliance_model_error = (
+            np.random.choice([-1, 1], size=len(K_m_diag_flex))
+            * (compliance_error_ratio * np.random.rand(len(K_m_diag_flex)))
+            * K_m_diag_flex
+        )
+        self.K = np.diag(K_m_diag_flex + self.static_compliance_model_error)
+        self.K_inv = np.linalg.inv(self.K)
+
+    def compute_theta_fb(self, theta: np.ndarray, force_cartesian: np.ndarray):
+        theta = np.asarray(theta, dtype=float).reshape(-1)
+        force_cartesian = np.asarray(force_cartesian, dtype=float).reshape(-1, 1)
+        j = self.robot_model.jacobian(theta, "TCP")[:, self.robot_model.idx_flex]
+
+        theta_fb = np.zeros(theta.shape, dtype=float)
+        theta_fb[self.robot_model.idx_flex] -= (self.K_inv @ j.transpose() @ force_cartesian).flatten()
+        return theta_fb
+
+
 class Trajectory():
     pass
 
@@ -436,7 +482,13 @@ class SettingsRealParameter():
         
         
 class Solver:
-    def __init__(self, robot: Robot, environment: Environment, trajectory: Trajectory):
+    def __init__(
+        self,
+        robot: Robot,
+        environment: Environment,
+        trajectory: Trajectory,
+        controller: Controller | None = None,
+    ):
         self.robot = robot
         self.environment = environment
         self.t_eval = trajectory.t_eval 
@@ -445,12 +497,13 @@ class Solver:
         self.t_end = trajectory.t_eval[-1]
         self.reference_system = 'TCP'
         self.Kp_flex = self.robot.K_m_diag_flex
+        self.controller = controller
 
-    def _rk4_step(self, f, t, dt, x, theta, thetaD, tau_ext):
-        k1 = f(t, x, theta, thetaD, tau_ext)
-        k2 = f(t + dt/2, x + dt/2 * k1, theta, thetaD, tau_ext)
-        k3 = f(t + dt/2, x + dt/2 * k2, theta, thetaD, tau_ext)
-        k4 = f(t + dt, x + dt * k3, theta, thetaD, tau_ext)
+    def _rk4_step(self, f, t, dt, x, theta, thetaD, tau_ext, f_ext):
+        k1 = f(t, x, theta, thetaD, tau_ext, f_ext)
+        k2 = f(t + dt/2, x + dt/2 * k1, theta, thetaD, tau_ext, f_ext)
+        k3 = f(t + dt/2, x + dt/2 * k2, theta, thetaD, tau_ext, f_ext)
+        k4 = f(t + dt, x + dt * k3, theta, thetaD, tau_ext, f_ext)
         
         return x + (dt / 6) * (k1 + 2*k2 + 2*k3 + k4)
     
@@ -473,19 +526,27 @@ class Solver:
         qD_flex0 = thetaD0[self.robot.idx_flex].reshape(-1, 1)
         return np.vstack([q_flex0, qD_flex0]).flatten()
 
-    def _ode_system(self, t, x_flex, theta, thetaD, tau_ext):
+    def _compensated_theta(self, theta, f_ext):
+        theta_cmd = np.asarray(theta, dtype=float).reshape(-1).copy()
+        if self.controller is None:
+            return theta_cmd
+        theta_cmd += self.controller.compute_theta_fb(theta_cmd, f_ext)
+        return theta_cmd
+
+    def _ode_system(self, t, x_flex, theta, thetaD, tau_ext, f_ext):
             n = self.n_flex
             q_flex = self._compute_q_flex(x_flex, n)
-            qD_flex = x_flex[n:2*n].reshape(-1, 1)        
+            qD_flex = x_flex[n:2*n].reshape(-1, 1)
+            theta_cmd = self._compensated_theta(theta, f_ext)
 
-            q_full = self._assemble_q_full(self.robot, q_flex, theta, n)  
+            q_full = self._assemble_q_full(self.robot, q_flex, theta_cmd, n)
 
             qD_full = np.full((self.robot.n, 1), np.nan)               
             qD_full[self.robot.idx_flex, :] = qD_flex.reshape(-1, 1)
             qD_full[self.robot.idx_rigid, :] = thetaD[self.robot.idx_rigid].reshape(-1, 1)
 
             tau_flex_joint = (
-                - self.robot.K_m_diag_flex * (q_flex - theta[self.robot.idx_flex].reshape(-1, 1))
+                - self.robot.K_m_diag_flex * (q_flex - theta_cmd[self.robot.idx_flex].reshape(-1, 1))
                 - self.robot.D_m_diag_flex * (qD_flex - thetaD[self.robot.idx_flex].reshape(-1, 1))
             ).reshape(-1, 1)
    
@@ -523,11 +584,15 @@ class Solver:
 
                 # external interaction
                 q_flex = self._compute_q_flex(x_flex=x_flex[i, :], n=self.n_flex)
-                q_full = self._assemble_q_full(self.robot, q_flex=q_flex, theta=self.theta[i, :], n=self.n_flex)  
+                theta_cmd = self._compensated_theta(self.theta[i, :], self.environment.get_f_ext())
+                q_full = self._assemble_q_full(self.robot, q_flex=q_flex, theta=theta_cmd, n=self.n_flex)
                 tau_ext = self.environment.compute_tau_ext(q_full) ## HERE YOU INTERACT WITH THE ROBOT AT THE TCP
+                f_ext = self.environment.get_f_ext().copy()
+                theta_cmd = self._compensated_theta(self.theta[i, :], f_ext)
+                q_full = self._assemble_q_full(self.robot, q_flex=q_flex, theta=theta_cmd, n=self.n_flex)
 
                 # additional logging
-                self.f_ext[i, :] = self.environment.get_f_ext().flatten()
+                self.f_ext[i, :] = f_ext.flatten()
                 self.tau_ext[i, :] = tau_ext.flatten()
                 self.fkine_vec[i, :] = self._calc_fkine_vec(q_full, self.reference_system) ## HERE YOU SEE THE RESPONSE ON THE TCP
 
@@ -540,6 +605,7 @@ class Solver:
                     self.theta[i, :],
                     self.thetaD[i, :],
                     tau_ext,
+                    f_ext,
                 )
 
                 if np.isnan(x_flex[i+1, :]).any():
@@ -815,8 +881,12 @@ if __name__ == '__main__':
     
     
             
-    # Solve the open-loop trajectory-following problem with zero external forces.
-    solver = Solver(robot, environment, trajectory)
+    controller = ComplianceCompensation(
+        ctrl_freq=1.0 / max(dt_ik, 1e-12),
+        robot_model=robot,
+    )
+
+    solver = Solver(robot, environment, trajectory, controller=controller)
     solver.solve()
     q, qD = solver.get_qs()
     fkine_vec = solver.get_fkine_vec()
